@@ -1,0 +1,55 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+enum SenderType {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model Merchant {
+  id            String         @id @default(uuid())
+  name          String
+  apiKey        String         @unique @default(uuid())
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+
+  @@map("merchants")
+}
+
+model Conversation {
+  id             String    @id @default(uuid())
+  merchantId     String
+  externalUserId String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  messages       Message[]
+
+  @@index([merchantId])
+  @@index([externalUserId])
+  @@map("conversations")
+}
+
+model Message {
+  id              String                        @id @default(uuid())
+  conversationId  String
+  senderType      SenderType
+  content         String                        @db.Text
+  vectorEmbedding Unsupported("vector(384)")?
+  metadata        Json?
+  createdAt       DateTime                      @default(now())
+  conversation    Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@map("messages")
+}
