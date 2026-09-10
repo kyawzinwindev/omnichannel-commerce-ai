@@ -12,6 +12,7 @@
     "build:widget": "npm --workspace=apps/widget run build",
     "build": "npm run build --workspaces",
     "test:intent": "npm --workspace=apps/server run test:intent",
-    "test:vector": "npm --workspace=apps/server run test:vector"
+    "test:vector": "npm --workspace=apps/server run test:vector",
+    "test:chat": "npm --workspace=apps/server run test:chat"
   }
 }

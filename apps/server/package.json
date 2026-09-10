@@ -16,7 +16,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:db:push": "prisma db push",
     "test:intent": "ts-node src/ai/test-intent.ts",
-    "test:vector": "ts-node src/ai/test-vector-search.ts"
+    "test:vector": "ts-node src/ai/test-vector-search.ts",
+    "test:chat": "ts-node src/ai/test-chat.ts"
   },
   "dependencies": {
     "@langchain/core": "^0.3.40",
