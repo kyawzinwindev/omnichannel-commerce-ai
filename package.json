@@ -14,6 +14,8 @@
     "test:intent": "npm --workspace=apps/server run test:intent",
     "test:vector": "npm --workspace=apps/server run test:vector",
     "test:chat": "npm --workspace=apps/server run test:chat",
-    "test:api": "npm --workspace=apps/server run test:api"
+    "test:api": "npm --workspace=apps/server run test:api",
+    "test:store": "npm --workspace=apps/server run test:store",
+    "prisma:seed": "npm --workspace=apps/server run prisma:seed"
   }
 }

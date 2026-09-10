@@ -3,15 +3,15 @@ import { ChatService, ChatResponse } from './chat.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
 import { Observable } from 'rxjs';
 
-@Controller('api/v1/chat')
+@Controller('api')
 export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
   /**
    * Standard REST endpoint for synchronous AI chat responses
-   * POST /api/v1/chat
+   * POST /api/chat & POST /api/v1/chat
    */
-  @Post()
+  @Post('chat')
   @HttpCode(HttpStatus.OK)
   async handleChat(@Body() dto: ChatRequestDto): Promise<ChatResponse> {
     return await this.chatService.processMessage(
@@ -23,9 +23,9 @@ export class ChatController {
 
   /**
    * Server-Sent Events (SSE) streaming endpoint for real-time token generation
-   * POST /api/v1/chat/stream
+   * POST /api/chat/stream
    */
-  @Post('stream')
+  @Post('chat/stream')
   @Sse()
   streamChat(@Body() dto: ChatRequestDto): Observable<MessageEvent> {
     return this.chatService.streamMessage(
@@ -33,5 +33,18 @@ export class ChatController {
       dto.message,
       dto.history || [],
     );
+  }
+
+  // Backward compatibility alias for /api/v1/chat
+  @Post('v1/chat')
+  @HttpCode(HttpStatus.OK)
+  async handleChatV1(@Body() dto: ChatRequestDto): Promise<ChatResponse> {
+    return await this.handleChat(dto);
+  }
+
+  @Post('v1/chat/stream')
+  @Sse()
+  streamChatV1(@Body() dto: ChatRequestDto): Observable<MessageEvent> {
+    return this.streamChat(dto);
   }
 }

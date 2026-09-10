@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChatMessage, ProductData } from '../types/chat';
 import { ProductCard } from './ProductCard';
 import { OrderTimeline } from './OrderTimeline';
@@ -13,13 +13,17 @@ export interface MessageListProps {
 export const MessageList: React.FC<MessageListProps> = ({ messages, onAddToCart }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const [isMounted, setIsMounted] = useState(false);
+
   useEffect(() => {
+    setIsMounted(true);
     if (scrollRef.current) {
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: 'smooth',
       });
     }
+
   }, [messages]);
 
   return (

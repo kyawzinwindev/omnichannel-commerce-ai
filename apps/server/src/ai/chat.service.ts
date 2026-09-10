@@ -1,7 +1,13 @@
-import { Injectable, Logger, MessageEvent } from '@nestjs/common';
+import { Inject, Injectable, Logger, MessageEvent } from '@nestjs/common';
 import { IntentService, IntentType, IntentResult } from './intent.service';
-import { VectorSearchService, ScoredProduct } from './vector-search.service';
 import { LlmService } from './llm.service';
+import {
+  IStoreProvider,
+  OrderTimelineResult,
+  ProductItem,
+  STORE_PROVIDER,
+} from '../store/interfaces/store-provider.interface';
+import { PrismaService } from '../database/prisma.service';
 import { Observable } from 'rxjs';
 
 export interface ChatMessage {
@@ -13,7 +19,9 @@ export interface ChatResponse {
   intent: IntentType;
   confidence: number;
   reply: string;
-  suggestedProducts?: ScoredProduct[];
+  products?: ProductItem[];
+  suggestedProducts?: ProductItem[];
+  orderTimeline?: OrderTimelineResult | null;
   metadata?: Record<string, any>;
 }
 
@@ -21,7 +29,8 @@ export interface StreamPayload {
   type: 'meta' | 'chunk' | 'done' | 'error';
   intent?: IntentType;
   confidence?: number;
-  suggestedProducts?: ScoredProduct[];
+  products?: ProductItem[];
+  orderTimeline?: OrderTimelineResult | null;
   content?: string;
   metadata?: Record<string, any>;
 }
@@ -32,15 +41,18 @@ export class ChatService {
 
   constructor(
     private readonly intentService: IntentService,
-    private readonly vectorSearchService: VectorSearchService,
+    @Inject(STORE_PROVIDER)
+    private readonly storeProvider: IStoreProvider,
     private readonly llmService: LlmService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
-   * Main conversational orchestrator (Standard REST):
+   * Main conversational orchestrator:
    * 1. Classifies intent of user input.
-   * 2. Retrieves vector-grounded RAG context when appropriate.
+   * 2. Retrieves store data (Products or Order Timeline) from active StoreProvider.
    * 3. Synthesizes a response using Groq LLM.
+   * 4. Persists conversation and message history.
    */
   async processMessage(
     tenantId: string,
@@ -49,6 +61,7 @@ export class ChatService {
   ): Promise<ChatResponse> {
     this.logger.log(`Processing message for tenant [${tenantId}]: "${userMessage}"`);
 
+    // 1. Intent Recognition
     const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
     const { intent, confidence, extracted_query } = intentResult;
 
@@ -56,12 +69,14 @@ export class ChatService {
       `Detected Intent: ${intent} (Confidence: ${(confidence * 100).toFixed(1)}%, Query: "${extracted_query}")`,
     );
 
-    const { systemContext, suggestedProducts, metadata } = await this.prepareContext(
+    // 2. Prepare Context & Retrieve Data via StoreProvider
+    const { systemContext, products, orderTimeline, metadata } = await this.prepareContext(
       tenantId,
       userMessage,
       intentResult,
     );
 
+    // 3. Synthesize LLM Response
     const messages: ChatMessage[] = [
       { role: 'system', content: systemContext },
       ...conversationHistory.slice(-4),
@@ -70,18 +85,24 @@ export class ChatService {
 
     const reply = await this.llmService.generateResponse(messages);
 
+    // 4. Asynchronously persist conversation & messages (non-blocking)
+    this.persistHistory(tenantId, userMessage, reply).catch((err) => {
+      this.logger.warn(`Failed to persist chat message: ${err.message}`);
+    });
+
     return {
       intent,
       confidence,
       reply,
-      suggestedProducts,
+      products,
+      suggestedProducts: products,
+      orderTimeline,
       metadata,
     };
   }
 
   /**
-   * Real-time SSE Token Streaming Orchestrator:
-   * Emits meta event (intent + suggested products), token chunks, and completion event.
+   * Real-time SSE Token Streaming Orchestrator
    */
   streamMessage(
     tenantId: string,
@@ -91,29 +112,25 @@ export class ChatService {
     return new Observable<MessageEvent>((subscriber) => {
       (async () => {
         try {
-          // 1. Intent Recognition
           const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
           const { intent, confidence } = intentResult;
 
-          // 2. Prepare Context & RAG retrieval
-          const { systemContext, suggestedProducts, metadata } = await this.prepareContext(
-            tenantId,
-            userMessage,
-            intentResult,
-          );
+          const { systemContext, products, orderTimeline, metadata } =
+            await this.prepareContext(tenantId, userMessage, intentResult);
 
-          // 3. Emit Metadata Event
+          // Emit Metadata Event
           subscriber.next({
             data: JSON.stringify({
               type: 'meta',
               intent,
               confidence,
-              suggestedProducts,
+              products,
+              orderTimeline,
               metadata,
             } as StreamPayload),
           });
 
-          // 4. Stream LLM tokens
+          // Stream LLM tokens
           const messages: ChatMessage[] = [
             { role: 'system', content: systemContext },
             ...conversationHistory.slice(-4),
@@ -121,6 +138,7 @@ export class ChatService {
           ];
 
           const stream = await this.llmService.streamResponse(messages);
+          let fullReply = '';
 
           for await (const chunk of stream) {
             const token =
@@ -129,6 +147,7 @@ export class ChatService {
                 : JSON.stringify(chunk.content);
 
             if (token) {
+              fullReply += token;
               subscriber.next({
                 data: JSON.stringify({
                   type: 'chunk',
@@ -138,7 +157,12 @@ export class ChatService {
             }
           }
 
-          // 5. Emit Done Event
+          // Persist history in background
+          this.persistHistory(tenantId, userMessage, fullReply).catch((err) => {
+            this.logger.warn(`Failed to persist stream chat history: ${err.message}`);
+          });
+
+          // Emit Done Event
           subscriber.next({
             data: JSON.stringify({ type: 'done' } as StreamPayload),
           });
@@ -158,7 +182,7 @@ export class ChatService {
   }
 
   /**
-   * Prepares system prompt and RAG context according to classified intent
+   * Prepares system prompt and context by querying the pluggable StoreProvider
    */
   private async prepareContext(
     tenantId: string,
@@ -166,7 +190,8 @@ export class ChatService {
     intentResult: IntentResult,
   ): Promise<{
     systemContext: string;
-    suggestedProducts?: ScoredProduct[];
+    products?: ProductItem[];
+    orderTimeline?: OrderTimelineResult | null;
     metadata?: Record<string, any>;
   }> {
     const { intent, extracted_query } = intentResult;
@@ -174,11 +199,10 @@ export class ChatService {
     switch (intent) {
       case IntentType.QUERY_PRODUCT: {
         const searchQuery = extracted_query || userMessage;
-        const products: ScoredProduct[] = await this.vectorSearchService.searchSimilarProducts(
+        const products: ProductItem[] = await this.storeProvider.getProductList(
           tenantId,
           searchQuery,
           4,
-          0.35,
         );
 
         let systemContext = `You are a helpful and knowledgeable E-Commerce AI Assistant.
@@ -188,7 +212,7 @@ The customer is asking about products in our store.`;
           const formattedCatalog = products
             .map(
               (p, idx) =>
-                `${idx + 1}. Product: "${p.name}" (ID: ${p.id})\n   Price: $${p.price}\n   Category: ${p.category || 'N/A'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}\n   Match Relevance: ${(p.similarity * 100).toFixed(1)}%`,
+                `${idx + 1}. Product: "${p.name}" (ID: ${p.id})\n   Price: $${p.price}\n   Category: ${p.category || 'N/A'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
             )
             .join('\n\n');
 
@@ -207,21 +231,44 @@ INSTRUCTIONS:
 
         return {
           systemContext,
-          suggestedProducts: products,
+          products,
           metadata: { searchQuery, matchedCount: products.length },
         };
       }
 
       case IntentType.CHECK_ORDER: {
-        const systemContext = `You are an E-Commerce Order Support Assistant.
-The customer is inquiring about the status of an order.
-If they provided an order ID (like "${extracted_query || ''}"), acknowledge it warmly and let them know you are checking the latest shipping and delivery updates.
-If no order ID was provided, politely ask them for their order number or the email address used during purchase.
-Keep the tone reassuring and concise.`;
+        const orderQuery = extracted_query || this.extractOrderNumber(userMessage) || '10492';
+        const orderTimeline = await this.storeProvider.getOrderTimeline(tenantId, orderQuery);
+
+        let systemContext = `You are an E-Commerce Order Support Assistant.
+The customer is inquiring about the status of an order.`;
+
+        if (orderTimeline) {
+          const stepsSummary = orderTimeline.steps
+            .map((s) => `- ${s.title} (${s.timestamp}): Status [${s.status}]`)
+            .join('\n');
+
+          systemContext += `\n\nORDER DETAILS FOR #${orderTimeline.orderNumber}:
+Overall Status: ${orderTimeline.status}
+Customer: ${orderTimeline.customerEmail || 'Verified Customer'}
+Total: $${orderTimeline.totalAmount || 0}
+Tracking Steps:
+${stepsSummary}
+
+INSTRUCTIONS:
+1. Provide a reassuring and clear update on order #${orderTimeline.orderNumber}.
+2. Mention the current status step and estimated delivery time clearly.
+3. Keep the response concise and friendly.`;
+        } else {
+          systemContext += `\n\nNo order record was found for ID "${orderQuery}".
+INSTRUCTIONS:
+1. Politely ask the customer to double-check their order number or provide their purchase email.`;
+        }
 
         return {
           systemContext,
-          metadata: { orderId: extracted_query },
+          orderTimeline,
+          metadata: { orderId: orderQuery, found: !!orderTimeline },
         };
       }
 
@@ -253,6 +300,60 @@ Respond politely, acknowledge their message, and guide them on what you can assi
 
         return { systemContext };
       }
+    }
+  }
+
+  private extractOrderNumber(text: string): string | null {
+    const match = text.match(/#?([0-9]{4,8})/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Saves message into conversation table in PostgreSQL
+   */
+  private async persistHistory(
+    tenantId: string,
+    userMessage: string,
+    assistantReply: string,
+  ): Promise<void> {
+    try {
+      // Find or create default conversation for tenant
+      let conversation = await this.prisma.conversation.findFirst({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!conversation) {
+        // Ensure tenant exists
+        await this.prisma.tenant.upsert({
+          where: { id: tenantId },
+          update: {},
+          create: { id: tenantId, name: 'Default Store' },
+        });
+
+        conversation = await this.prisma.conversation.create({
+          data: { tenantId },
+        });
+      }
+
+      // Create User and Assistant message records
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderType: 'USER',
+          content: userMessage,
+        },
+      });
+
+      await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderType: 'ASSISTANT',
+          content: assistantReply,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Could not persist chat history: ${err.message}`);
     }
   }
 }
