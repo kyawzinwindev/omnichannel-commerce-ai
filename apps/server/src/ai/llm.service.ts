@@ -9,13 +9,19 @@ export class LlmService {
   private model: ChatGroq;
 
   constructor(private readonly configService: ConfigService) {
-    const apiKey = this.configService.get<string>('groq.apiKey');
-    const modelName = this.configService.get<string>('groq.model', 'llama-3.1-8b-instant');
+    const apiKey =
+      this.configService.get<string>('groq.apiKey') ||
+      this.configService.get<string>('GROQ_API_KEY') ||
+      process.env.GROQ_API_KEY;
+    const modelName =
+      this.configService.get<string>('groq.model') ||
+      this.configService.get<string>('GROQ_MODEL') ||
+      'openai/gpt-oss-20b';
 
     this.model = new ChatGroq({
       apiKey: apiKey || 'mock_key',
       model: modelName,
-      temperature: 0.2,
+      temperature: 0.0,
     });
   }
 

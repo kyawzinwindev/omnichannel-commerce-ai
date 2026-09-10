@@ -13,7 +13,8 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "test:intent": "ts-node src/ai/test-intent.ts"
   },
   "dependencies": {
     "@langchain/core": "^0.3.40",

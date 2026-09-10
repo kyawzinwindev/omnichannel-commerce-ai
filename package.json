@@ -10,6 +10,7 @@
     "dev:widget": "npm --workspace=apps/widget run dev",
     "build:server": "npm --workspace=apps/server run build",
     "build:widget": "npm --workspace=apps/widget run build",
-    "build": "npm run build --workspaces"
+    "build": "npm run build --workspaces",
+    "test:intent": "npm --workspace=apps/server run test:intent"
   }
 }
