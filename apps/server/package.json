@@ -17,7 +17,8 @@
     "prisma:db:push": "prisma db push",
     "test:intent": "ts-node src/ai/test-intent.ts",
     "test:vector": "ts-node src/ai/test-vector-search.ts",
-    "test:chat": "ts-node src/ai/test-chat.ts"
+    "test:chat": "ts-node src/ai/test-chat.ts",
+    "test:api": "ts-node src/ai/test-chat-api.ts"
   },
   "dependencies": {
     "@langchain/core": "^0.3.40",
@@ -28,6 +29,8 @@
     "@nestjs/platform-express": "^10.0.0",
     "@prisma/client": "^5.22.0",
     "@xenova/transformers": "^2.17.2",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "ioredis": "^5.4.1",
     "pg": "^8.13.1",
     "reflect-metadata": "^0.2.0",
@@ -40,8 +43,10 @@
     "@types/ioredis": "^5.0.0",
     "@types/node": "^20.3.1",
     "@types/pg": "^8.11.10",
+    "@types/supertest": "^7.2.1",
     "prisma": "^5.22.0",
     "source-map-support": "^0.5.21",
+    "supertest": "^7.2.2",
     "ts-loader": "^9.4.3",
     "ts-node": "^10.9.1",
     "tsconfig-paths": "^4.2.0",
