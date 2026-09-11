@@ -34,6 +34,22 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
   const [isMinimized, setIsMinimized] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(defaultInitialMessages);
   const [isTyping, setIsTyping] = useState(false);
+  const [conversationId, setConversationId] = useState<string>('');
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storageKey = `omnichannel_chat_conv_${tenantId}`;
+      let storedId = localStorage.getItem(storageKey);
+      if (!storedId) {
+        storedId =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        localStorage.setItem(storageKey, storedId);
+      }
+      setConversationId(storedId);
+    }
+  }, [tenantId]);
 
   const handleSendMessage = async (text: string) => {
     if (!text.trim()) return;
@@ -49,12 +65,6 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
     setIsTyping(true);
 
     try {
-      // Prepare message history for context
-      const history = messages.slice(-4).map((m) => ({
-        role: m.sender === 'user' ? ('user' as const) : ('assistant' as const),
-        content: m.text,
-      }));
-
       const res = await fetch(`${apiEndpoint}/api/v1/chat`, {
         method: 'POST',
         headers: {
@@ -62,19 +72,23 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         },
         body: JSON.stringify({
           tenantId,
+          conversationId: conversationId || undefined,
           message: text.trim(),
-          history,
         }),
       });
-
-      console.log(res)
-
 
       if (!res.ok) {
         throw new Error(`Server returned HTTP ${res.status}`);
       }
 
       const data = await res.json();
+
+      if (data.conversationId && data.conversationId !== conversationId) {
+        setConversationId(data.conversationId);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(`omnichannel_chat_conv_${tenantId}`, data.conversationId);
+        }
+      }
 
       const botProducts: ProductData[] | undefined =
         data.products || data.suggestedProducts
