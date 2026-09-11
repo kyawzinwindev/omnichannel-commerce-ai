@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { CloudCog, MessageSquare } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { MessageSquare } from 'lucide-react';
 import { ChatHeader } from './ChatHeader';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
@@ -20,7 +20,7 @@ const defaultInitialMessages: ChatMessage[] = [
     id: 'm1',
     sender: 'assistant',
     text: "Hi! I'm your AI store assistant. Ask me about products, order updates, or general store recommendations.",
-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    timestamp: 'Just now',
   },
 ];
 
@@ -36,18 +36,22 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
   const [isTyping, setIsTyping] = useState(false);
   const [conversationId, setConversationId] = useState<string>('');
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (typeof window !== 'undefined') {
       const storageKey = `omnichannel_chat_conv_${tenantId}`;
-      let storedId = localStorage.getItem(storageKey);
-      if (!storedId) {
-        storedId =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        localStorage.setItem(storageKey, storedId);
+      try {
+        let storedId = localStorage.getItem(storageKey);
+        if (!storedId) {
+          storedId =
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          localStorage.setItem(storageKey, storedId);
+        }
+        setConversationId(storedId);
+      } catch (err) {
+        console.warn('localStorage access failed:', err);
       }
-      setConversationId(storedId);
     }
   }, [tenantId]);
 
@@ -86,7 +90,9 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
       if (data.conversationId && data.conversationId !== conversationId) {
         setConversationId(data.conversationId);
         if (typeof window !== 'undefined') {
-          localStorage.setItem(`omnichannel_chat_conv_${tenantId}`, data.conversationId);
+          try {
+            localStorage.setItem(`omnichannel_chat_conv_${tenantId}`, data.conversationId);
+          } catch {}
         }
       }
 

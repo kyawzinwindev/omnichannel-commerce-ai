@@ -6,8 +6,10 @@ import { ChatWidget } from '../components/ChatWidget';
 
 export default function WidgetDemoPage() {
   const [isDark, setIsDark] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     if (typeof window !== 'undefined') {
       const isDarkMode = document.documentElement.classList.contains('dark');
       setIsDark(isDarkMode);
@@ -17,10 +19,12 @@ export default function WidgetDemoPage() {
   const toggleTheme = () => {
     const nextDark = !isDark;
     setIsDark(nextDark);
-    if (nextDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+    if (typeof document !== 'undefined') {
+      if (nextDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
     }
   };
 
@@ -50,10 +54,11 @@ export default function WidgetDemoPage() {
         <button
           id="theme-toggle"
           type="button"
+          suppressHydrationWarning
           onClick={toggleTheme}
           className="mt-6 inline-flex items-center gap-2 rounded-full border border-slate-300 dark:border-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-200/50 dark:hover:bg-slate-800 active:scale-[0.97] transition"
         >
-          {isDark ? (
+          {mounted && isDark ? (
             <>
               <Sun className="w-4 h-4" />
               <span>Switch to Light Mode</span>

@@ -101,55 +101,75 @@ export class ChatService {
       `Processing message for tenant [${tenantId}], conversation [${activeConversationId}]: "${userMessage}"`,
     );
 
-    // 1. Intent Recognition
-    const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
-    const { intent, confidence, extracted_query } = intentResult;
+    try {
+      // 1. Intent Recognition
+      const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
+      const { intent, confidence, extracted_query } = intentResult;
 
-    this.logger.log(
-      `Detected Intent: ${intent} (Confidence: ${(confidence * 100).toFixed(1)}%, Query: "${extracted_query}")`,
-    );
+      this.logger.log(
+        `Detected Intent: ${intent} (Confidence: ${(confidence * 100).toFixed(1)}%, Query: "${extracted_query}")`,
+      );
 
-    // 2. Prepare Context & Retrieve Data via StoreProvider
-    const { systemContext, products, orderTimeline, metadata } = await this.prepareContext(
-      tenantId,
-      userMessage,
-      intentResult,
-    );
+      // 2. Prepare Context & Retrieve Data via StoreProvider
+      const { systemContext, products, orderTimeline, metadata } = await this.prepareContext(
+        tenantId,
+        userMessage,
+        intentResult,
+      );
 
-    // 3. Synthesize LLM Response via LangChain chain with Redis history
-    const runnableChain = this.createHistoryRunnable();
-    const sessionId = `${tenantId}:${activeConversationId}`;
+      // 3. Synthesize LLM Response via LangChain chain with Redis history
+      const runnableChain = this.createHistoryRunnable();
+      const sessionId = `${tenantId}:${activeConversationId}`;
 
-    const response = await runnableChain.invoke(
-      {
-        systemContext,
-        input: userMessage,
-      },
-      {
-        configurable: { sessionId },
-      },
-    );
+      const response = await runnableChain.invoke(
+        {
+          systemContext,
+          input: userMessage,
+        },
+        {
+          configurable: { sessionId },
+        },
+      );
 
-    const reply =
-      typeof response.content === 'string'
-        ? response.content
-        : JSON.stringify(response.content);
+      const reply =
+        typeof response.content === 'string'
+          ? response.content
+          : JSON.stringify(response.content);
 
-    // 4. Asynchronously persist conversation & messages to PostgreSQL (non-blocking)
-    this.persistHistory(tenantId, activeConversationId, userMessage, reply).catch((err) => {
-      this.logger.warn(`Failed to persist chat message to PostgreSQL: ${err.message}`);
-    });
+      // 4. Asynchronously persist conversation & messages to PostgreSQL (non-blocking)
+      this.persistHistory(tenantId, activeConversationId, userMessage, reply).catch((err) => {
+        this.logger.warn(`Failed to persist chat message to PostgreSQL: ${err.message}`);
+      });
 
-    return {
-      conversationId: activeConversationId,
-      intent,
-      confidence,
-      reply,
-      products,
-      suggestedProducts: products,
-      orderTimeline,
-      metadata,
-    };
+      return {
+        conversationId: activeConversationId,
+        intent,
+        confidence,
+        reply,
+        products,
+        suggestedProducts: products,
+        orderTimeline,
+        metadata,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Error during processMessage for tenant [${tenantId}], conv [${activeConversationId}]: ${error.message}`,
+      );
+
+      const fallbackReply =
+        "Hello! I'm your AI store assistant. I'm currently having trouble reaching all catalog services, but I'm here to help you. How can I assist you today?";
+
+      return {
+        conversationId: activeConversationId,
+        intent: IntentType.UNKNOWN,
+        confidence: 0.0,
+        reply: fallbackReply,
+        products: [],
+        suggestedProducts: [],
+        orderTimeline: null,
+        metadata: { fallback: true, error: error.message },
+      };
+    }
   }
 
   /**
@@ -233,14 +253,21 @@ export class ChatService {
           });
           subscriber.complete();
         } catch (error) {
-          this.logger.error(`Error during streamMessage: ${error.message}`);
+          this.logger.warn(`Error during streamMessage: ${error.message}`);
           subscriber.next({
             data: JSON.stringify({
-              type: 'error',
-              content: 'An error occurred while generating the response.',
+              type: 'chunk',
+              content:
+                "I apologize, but I encountered a temporary issue while streaming the response. Please try asking again!",
             } as StreamPayload),
           });
-          subscriber.error(error);
+          subscriber.next({
+            data: JSON.stringify({
+              type: 'done',
+              conversationId: activeConversationId,
+            } as StreamPayload),
+          });
+          subscriber.complete();
         }
       })();
     });

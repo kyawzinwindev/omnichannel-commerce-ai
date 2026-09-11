@@ -4,7 +4,7 @@ export default () => ({
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   google: {
     apiKey: process.env.GOOGLE_API_KEY || '',
-    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash-latest',
+    model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
   },
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',

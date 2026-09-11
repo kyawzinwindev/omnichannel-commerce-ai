@@ -21,7 +21,7 @@ export class LlmService {
     const geminiModelName =
       this.configService.get<string>('google.model') ||
       this.configService.get<string>('GEMINI_MODEL') ||
-      'gemini-1.5-flash-latest';
+      'gemini-3.6-flash';
 
     const groqApiKey =
       this.configService.get<string>('groq.apiKey') ||

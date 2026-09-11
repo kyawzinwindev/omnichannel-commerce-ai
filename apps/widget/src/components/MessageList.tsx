@@ -43,7 +43,7 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, onAddToCart 
                 {msg.text}
               </div>
               {msg.timestamp && (
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 pr-1">
+                <p suppressHydrationWarning className="text-[11px] text-slate-400 dark:text-slate-500 pr-1">
                   {msg.timestamp}
                 </p>
               )}
@@ -79,7 +79,7 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, onAddToCart 
             )}
 
             {msg.timestamp && (
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 pl-1 -mt-1">
+              <p suppressHydrationWarning className="text-[11px] text-slate-400 dark:text-slate-500 pl-1 -mt-1">
                 {msg.timestamp}
               </p>
             )}
