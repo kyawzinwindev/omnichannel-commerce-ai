@@ -8,7 +8,12 @@ import {
   STORE_PROVIDER,
 } from '../store/interfaces/store-provider.interface';
 import { PrismaService } from '../database/prisma.service';
+import { RedisService } from '../redis/redis.service';
+import { RedisChatMessageHistory } from '../redis/redis-chat-history';
+import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
+import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { Observable } from 'rxjs';
+import { randomUUID } from 'crypto';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -16,6 +21,7 @@ export interface ChatMessage {
 }
 
 export interface ChatResponse {
+  conversationId: string;
   intent: IntentType;
   confidence: number;
   reply: string;
@@ -27,6 +33,7 @@ export interface ChatResponse {
 
 export interface StreamPayload {
   type: 'meta' | 'chunk' | 'done' | 'error';
+  conversationId?: string;
   intent?: IntentType;
   confidence?: number;
   products?: ProductItem[];
@@ -45,21 +52,54 @@ export class ChatService {
     private readonly storeProvider: IStoreProvider,
     private readonly llmService: LlmService,
     private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
   ) {}
+
+  /**
+   * Helper to create a RunnableWithMessageHistory chain backed by RedisChatMessageHistory
+   */
+  private createHistoryRunnable() {
+    const prompt = ChatPromptTemplate.fromMessages([
+      ['system', '{systemContext}'],
+      new MessagesPlaceholder('chat_history'),
+      ['human', '{input}'],
+    ]);
+
+    const chain = prompt.pipe(this.llmService.getModel());
+
+    return new RunnableWithMessageHistory({
+      runnable: chain,
+      getMessageHistory: async (sessionId: string) => {
+        const [tenantId, conversationId] = sessionId.split(':');
+        return new RedisChatMessageHistory({
+          tenantId,
+          conversationId,
+          redisService: this.redisService,
+          prisma: this.prisma,
+          ttlSeconds: 86400, // 24 hours
+        });
+      },
+      inputMessagesKey: 'input',
+      historyMessagesKey: 'chat_history',
+    });
+  }
 
   /**
    * Main conversational orchestrator:
    * 1. Classifies intent of user input.
    * 2. Retrieves store data (Products or Order Timeline) from active StoreProvider.
-   * 3. Synthesizes a response using Groq LLM.
-   * 4. Persists conversation and message history.
+   * 3. Synthesizes a response using Groq LLM + LangChain RunnableWithMessageHistory (Redis cached).
+   * 4. Persists conversation and message history to PostgreSQL.
    */
   async processMessage(
     tenantId: string,
     userMessage: string,
-    conversationHistory: ChatMessage[] = [],
+    conversationId?: string,
   ): Promise<ChatResponse> {
-    this.logger.log(`Processing message for tenant [${tenantId}]: "${userMessage}"`);
+    const activeConversationId = conversationId || randomUUID();
+    this.logger.log(
+      `Processing message for tenant [${tenantId}], conversation [${activeConversationId}]: "${userMessage}"`,
+    );
 
     // 1. Intent Recognition
     const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
@@ -76,21 +116,32 @@ export class ChatService {
       intentResult,
     );
 
-    // 3. Synthesize LLM Response
-    const messages: ChatMessage[] = [
-      { role: 'system', content: systemContext },
-      ...conversationHistory.slice(-4),
-      { role: 'user', content: userMessage },
-    ];
+    // 3. Synthesize LLM Response via LangChain chain with Redis history
+    const runnableChain = this.createHistoryRunnable();
+    const sessionId = `${tenantId}:${activeConversationId}`;
 
-    const reply = await this.llmService.generateResponse(messages);
+    const response = await runnableChain.invoke(
+      {
+        systemContext,
+        input: userMessage,
+      },
+      {
+        configurable: { sessionId },
+      },
+    );
 
-    // 4. Asynchronously persist conversation & messages (non-blocking)
-    this.persistHistory(tenantId, userMessage, reply).catch((err) => {
-      this.logger.warn(`Failed to persist chat message: ${err.message}`);
+    const reply =
+      typeof response.content === 'string'
+        ? response.content
+        : JSON.stringify(response.content);
+
+    // 4. Asynchronously persist conversation & messages to PostgreSQL (non-blocking)
+    this.persistHistory(tenantId, activeConversationId, userMessage, reply).catch((err) => {
+      this.logger.warn(`Failed to persist chat message to PostgreSQL: ${err.message}`);
     });
 
     return {
+      conversationId: activeConversationId,
       intent,
       confidence,
       reply,
@@ -102,13 +153,15 @@ export class ChatService {
   }
 
   /**
-   * Real-time SSE Token Streaming Orchestrator
+   * Real-time SSE Token Streaming Orchestrator with LangChain Redis History
    */
   streamMessage(
     tenantId: string,
     userMessage: string,
-    conversationHistory: ChatMessage[] = [],
+    conversationId?: string,
   ): Observable<MessageEvent> {
+    const activeConversationId = conversationId || randomUUID();
+
     return new Observable<MessageEvent>((subscriber) => {
       (async () => {
         try {
@@ -122,6 +175,7 @@ export class ChatService {
           subscriber.next({
             data: JSON.stringify({
               type: 'meta',
+              conversationId: activeConversationId,
               intent,
               confidence,
               products,
@@ -130,14 +184,20 @@ export class ChatService {
             } as StreamPayload),
           });
 
-          // Stream LLM tokens
-          const messages: ChatMessage[] = [
-            { role: 'system', content: systemContext },
-            ...conversationHistory.slice(-4),
-            { role: 'user', content: userMessage },
-          ];
+          // Stream LLM tokens via RunnableWithMessageHistory
+          const runnableChain = this.createHistoryRunnable();
+          const sessionId = `${tenantId}:${activeConversationId}`;
 
-          const stream = await this.llmService.streamResponse(messages);
+          const stream = await runnableChain.stream(
+            {
+              systemContext,
+              input: userMessage,
+            },
+            {
+              configurable: { sessionId },
+            },
+          );
+
           let fullReply = '';
 
           for await (const chunk of stream) {
@@ -157,14 +217,19 @@ export class ChatService {
             }
           }
 
-          // Persist history in background
-          this.persistHistory(tenantId, userMessage, fullReply).catch((err) => {
-            this.logger.warn(`Failed to persist stream chat history: ${err.message}`);
-          });
+          // Persist history in PostgreSQL in background
+          this.persistHistory(tenantId, activeConversationId, userMessage, fullReply).catch(
+            (err) => {
+              this.logger.warn(`Failed to persist stream chat history to PostgreSQL: ${err.message}`);
+            },
+          );
 
           // Emit Done Event
           subscriber.next({
-            data: JSON.stringify({ type: 'done' } as StreamPayload),
+            data: JSON.stringify({
+              type: 'done',
+              conversationId: activeConversationId,
+            } as StreamPayload),
           });
           subscriber.complete();
         } catch (error) {
@@ -313,47 +378,49 @@ Respond politely, acknowledge their message, and guide them on what you can assi
    */
   private async persistHistory(
     tenantId: string,
+    conversationId: string,
     userMessage: string,
     assistantReply: string,
   ): Promise<void> {
     try {
-      // Find or create default conversation for tenant
-      let conversation = await this.prisma.conversation.findFirst({
-        where: { tenantId },
-        orderBy: { createdAt: 'desc' },
+      // Ensure tenant exists
+      await this.prisma.tenant.upsert({
+        where: { id: tenantId },
+        update: {},
+        create: { id: tenantId, name: 'Default Store' },
+      });
+
+      // Find or create conversation for the specific conversationId
+      let conversation = await this.prisma.conversation.findUnique({
+        where: { id: conversationId },
       });
 
       if (!conversation) {
-        // Ensure tenant exists
-        await this.prisma.tenant.upsert({
-          where: { id: tenantId },
-          update: {},
-          create: { id: tenantId, name: 'Default Store' },
-        });
-
         conversation = await this.prisma.conversation.create({
-          data: { tenantId },
+          data: {
+            id: conversationId,
+            tenantId,
+          },
         });
       }
 
-      // Create User and Assistant message records
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          senderType: 'USER',
-          content: userMessage,
-        },
-      });
-
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          senderType: 'ASSISTANT',
-          content: assistantReply,
-        },
+      // Create User and Assistant message records in PostgreSQL
+      await this.prisma.message.createMany({
+        data: [
+          {
+            conversationId: conversation.id,
+            senderType: 'USER',
+            content: userMessage,
+          },
+          {
+            conversationId: conversation.id,
+            senderType: 'ASSISTANT',
+            content: assistantReply,
+          },
+        ],
       });
     } catch (err) {
-      this.logger.warn(`Could not persist chat history: ${err.message}`);
+      this.logger.warn(`Could not persist chat history to PostgreSQL: ${err.message}`);
     }
   }
 }

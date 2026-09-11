@@ -50,6 +50,33 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    try {
+      return await this.client.rpush(key, ...values);
+    } catch (error) {
+      this.logger.error(`Error rpush to key ${key} in Redis: ${error.message}`);
+      return 0;
+    }
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    try {
+      return await this.client.lrange(key, start, stop);
+    } catch (error) {
+      this.logger.error(`Error lrange for key ${key} from Redis: ${error.message}`);
+      return [];
+    }
+  }
+
+  async expire(key: string, seconds: number): Promise<number> {
+    try {
+      return await this.client.expire(key, seconds);
+    } catch (error) {
+      this.logger.error(`Error setting expire on key ${key} in Redis: ${error.message}`);
+      return 0;
+    }
+  }
+
   async del(key: string): Promise<void> {
     try {
       await this.client.del(key);

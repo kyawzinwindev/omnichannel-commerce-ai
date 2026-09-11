@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { ValidationPipe, INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
+import { randomUUID } from 'crypto';
 
 async function bootstrap() {
   console.log('\n======================================================');
@@ -24,23 +25,17 @@ async function bootstrap() {
   const server = app.getHttpServer();
 
   try {
+    const testTenantId = `api-tenant-${randomUUID().slice(0, 6)}`;
+    const testConversationId = `api-conv-${randomUUID()}`;
+
     // -----------------------------------------------------------------
-    // TEST 1: Valid POST /api/v1/chat
+    // TEST 1: Valid POST /api/v1/chat with server-side conversationId
     // -----------------------------------------------------------------
-    console.log('▶ [Test 1] Testing Valid POST /api/v1/chat...');
+    console.log('▶ [Test 1] Testing Valid POST /api/v1/chat with conversationId...');
     const validPayload = {
-      tenantId: 'test-api-tenant-1',
+      tenantId: testTenantId,
+      conversationId: testConversationId,
       message: 'Hello there, how can you help me today?',
-      history: [
-        {
-          role: 'user',
-          content: 'Hi',
-        },
-        {
-          role: 'assistant',
-          content: 'Hello! Welcome to our store.',
-        },
-      ],
     };
 
     const res1 = await request(server)
@@ -49,48 +44,44 @@ async function bootstrap() {
       .expect(200);
 
     console.log('  ✓ Status: 200 OK');
+    console.log(`  ✓ Returned Conversation ID: ${res1.body.conversationId}`);
     console.log(`  ✓ Detected Intent: ${res1.body.intent} (Confidence: ${(res1.body.confidence * 100).toFixed(1)}%)`);
     console.log(`  ✓ Reply preview: "${res1.body.reply.slice(0, 80)}..."`);
     console.log('  ✅ Test 1 Passed.\n');
 
     // -----------------------------------------------------------------
-    // TEST 2: Invalid Request (Missing tenantId) -> 400 Bad Request
+    // TEST 2: Multi-turn Follow-up via REST endpoint (Server-side Memory)
     // -----------------------------------------------------------------
-    console.log('▶ [Test 2] Testing Invalid Payload (Missing tenantId)...');
+    console.log('▶ [Test 2] Testing Multi-turn Context Retention via REST...');
+    const followUpPayload = {
+      tenantId: testTenantId,
+      conversationId: testConversationId,
+      message: 'What was my initial question?',
+    };
+
+    const res2 = await request(server)
+      .post('/api/v1/chat')
+      .send(followUpPayload)
+      .expect(200);
+
+    console.log('  ✓ Status: 200 OK');
+    console.log(`  ✓ Follow-up Reply preview: "${res2.body.reply.slice(0, 100)}..."`);
+    console.log('  ✅ Test 2 Passed.\n');
+
+    // -----------------------------------------------------------------
+    // TEST 3: Invalid Request (Missing tenantId) -> 400 Bad Request
+    // -----------------------------------------------------------------
+    console.log('▶ [Test 3] Testing Invalid Payload (Missing tenantId)...');
     const invalidPayloadNoTenant = {
       message: 'Do you have sneakers?',
     };
 
-    const res2 = await request(server)
+    const res3 = await request(server)
       .post('/api/v1/chat')
       .send(invalidPayloadNoTenant)
       .expect(400);
 
     console.log('  ✓ Status: 400 Bad Request (Validation Caught)');
-    console.log(`  ✓ Error response:`, res2.body.message);
-    console.log('  ✅ Test 2 Passed.\n');
-
-    // -----------------------------------------------------------------
-    // TEST 3: Invalid Request (Invalid History Role) -> 400 Bad Request
-    // -----------------------------------------------------------------
-    console.log('▶ [Test 3] Testing Invalid History Role -> 400 Bad Request...');
-    const invalidPayloadRole = {
-      tenantId: 'tenant-123',
-      message: 'Show me boots',
-      history: [
-        {
-          role: 'admin', // invalid role
-          content: 'Hello admin',
-        },
-      ],
-    };
-
-    const res3 = await request(server)
-      .post('/api/v1/chat')
-      .send(invalidPayloadRole)
-      .expect(400);
-
-    console.log('  ✓ Status: 400 Bad Request (Role Validation Caught)');
     console.log(`  ✓ Error response:`, res3.body.message);
     console.log('  ✅ Test 3 Passed.\n');
 
@@ -99,8 +90,9 @@ async function bootstrap() {
     // -----------------------------------------------------------------
     console.log('▶ [Test 4] Testing SSE Streaming POST /api/v1/chat/stream...');
     const streamPayload = {
-      tenantId: 'test-api-tenant-1',
-      message: 'Hello, what products do you sell?',
+      tenantId: testTenantId,
+      conversationId: testConversationId,
+      message: 'Can you recommend gifts for a runner?',
     };
 
     const streamResponse = await new Promise<string>((resolve, reject) => {

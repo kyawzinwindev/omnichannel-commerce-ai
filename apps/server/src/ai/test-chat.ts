@@ -3,11 +3,12 @@ import { AppModule } from '../app.module';
 import { PrismaService } from '../database/prisma.service';
 import { EmbeddingsService } from './embeddings.service';
 import { ChatService } from './chat.service';
+import { RedisService } from '../redis/redis.service';
 import { randomUUID } from 'crypto';
 
 async function bootstrap() {
   console.log('\n======================================================');
-  console.log('  COMMERCE AI CHAT ORCHESTRATOR & RAG TEST RUNNER');
+  console.log('  COMMERCE AI CHAT ORCHESTRATOR & REDIS MEMORY TEST RUNNER');
   console.log('======================================================\n');
 
   const app = await NestFactory.createApplicationContext(AppModule, {
@@ -17,9 +18,11 @@ async function bootstrap() {
   const prisma = app.get(PrismaService);
   const embeddingsService = app.get(EmbeddingsService);
   const chatService = app.get(ChatService);
+  const redisService = app.get(RedisService);
 
   const testTenantId = `tenant-${randomUUID().slice(0, 8)}`;
-  console.log(`[1] Created Test Tenant Context: ${testTenantId}`);
+  const testConversationId = `conv-${randomUUID()}`;
+  console.log(`[1] Created Test Context -> Tenant: ${testTenantId}, Conversation: ${testConversationId}`);
 
   // Test catalog to seed
   const sampleProducts = [
@@ -53,6 +56,12 @@ async function bootstrap() {
   ];
 
   try {
+    await prisma.tenant.upsert({
+      where: { id: testTenantId },
+      update: {},
+      create: { id: testTenantId, name: 'Test Sports Store' },
+    });
+
     console.log('\n[2] Seeding product catalog with vector embeddings...');
     for (const product of sampleProducts) {
       const textToEmbed = `${product.name}. ${product.description} Category: ${product.category}. Color: ${product.attributes.color}`;
@@ -87,38 +96,47 @@ async function bootstrap() {
       console.log(`  ✓ Seeded: "${product.name}" ($${product.price})`);
     }
 
-    // Test Scenarios
+    // Multi-turn conversational scenarios using a single conversation ID
     const testCases = [
       {
-        description: 'Scenario A: Customer Greeting',
+        description: 'Turn 1: Customer Greeting',
         message: 'Hello! Good morning, how are you?',
         expectedIntent: 'GREETING',
       },
       {
-        description: 'Scenario B: Product Query (RAG Search)',
+        description: 'Turn 2: Product Query (RAG Search)',
         message: 'Do you have any blue running shoes?',
         expectedIntent: 'QUERY_PRODUCT',
       },
       {
-        description: 'Scenario C: Order Status Tracking',
+        description: 'Turn 3: Multi-turn Follow-up (Context Memory Test)',
+        message: 'How much are the CloudVelocity sneakers you just mentioned?',
+        expectedIntent: 'QUERY_PRODUCT',
+      },
+      {
+        description: 'Turn 4: Order Status Tracking',
         message: 'Where is my order #ORD-88492?',
         expectedIntent: 'CHECK_ORDER',
       },
       {
-        description: 'Scenario D: Add to Cart',
+        description: 'Turn 5: Add to Cart',
         message: 'Please add the CloudVelocity shoes to my cart in size 10',
         expectedIntent: 'ADD_TO_CART',
       },
     ];
 
-    console.log('\n[3] Running Conversational Orchestration Scenarios:\n');
+    console.log('\n[3] Running Stateful Conversational Scenarios (Redis Memory):\n');
 
     for (const testCase of testCases) {
       console.log(`------------------------------------------------------`);
       console.log(`▶ ${testCase.description}`);
       console.log(`User: "${testCase.message}"`);
 
-      const response = await chatService.processMessage(testTenantId, testCase.message);
+      const response = await chatService.processMessage(
+        testTenantId,
+        testCase.message,
+        testConversationId,
+      );
 
       console.log(`AI Response (Intent: ${response.intent} [${(response.confidence * 100).toFixed(1)}%]):`);
       console.log(response.reply);
@@ -133,16 +151,36 @@ async function bootstrap() {
       console.log('');
     }
 
-    console.log('ALL SCENARIOS EXECUTED SUCCESSFULLY.\n');
+    // Check Redis Cache
+    const redisKey = `chat:history:${testTenantId}:${testConversationId}`;
+    const cachedMessages = await redisService.lrange(redisKey, 0, -1);
+    console.log(`[4] Redis Verification for key [${redisKey}]:`);
+    console.log(`  ✓ Cached message count in Redis: ${cachedMessages.length}`);
+    if (cachedMessages.length > 0) {
+      console.log(`  ✓ First cached message: ${cachedMessages[0]}`);
+      console.log(`  ✓ Latest cached message: ${cachedMessages[cachedMessages.length - 1]}`);
+    }
+
+    // Check PostgreSQL
+    const dbMessages = await prisma.message.findMany({
+      where: { conversationId: testConversationId },
+      orderBy: { createdAt: 'asc' },
+    });
+    console.log(`\n[5] PostgreSQL Verification for conversation [${testConversationId}]:`);
+    console.log(`  ✓ Persisted message count in PostgreSQL: ${dbMessages.length}`);
+
+    console.log('\nALL SCENARIOS EXECUTED SUCCESSFULLY.\n');
   } catch (error) {
     console.error('Chat Orchestrator Test failed:', error);
   } finally {
-    console.log('[4] Cleaning up test tenant products from database...');
+    console.log('[6] Cleaning up test records from database and Redis...');
     try {
-      const deleted = await prisma.$executeRaw`
-        DELETE FROM products WHERE tenant_id = ${testTenantId};
-      `;
-      console.log(`  ✓ Cleaned up ${deleted} test records.`);
+      await prisma.$executeRaw`DELETE FROM products WHERE tenant_id = ${testTenantId};`;
+      await prisma.message.deleteMany({ where: { conversationId: testConversationId } });
+      await prisma.conversation.deleteMany({ where: { id: testConversationId } });
+      await prisma.tenant.deleteMany({ where: { id: testTenantId } });
+      await redisService.del(`chat:history:${testTenantId}:${testConversationId}`);
+      console.log(`  ✓ Cleanup completed successfully.`);
     } catch (cleanupError) {
       console.warn(`Cleanup notice: ${cleanupError.message}`);
     }

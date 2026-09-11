@@ -19,6 +19,7 @@
     "test:intent": "ts-node src/ai/test-intent.ts",
     "test:vector": "ts-node src/ai/test-vector-search.ts",
     "test:chat": "ts-node src/ai/test-chat.ts",
+    "test:memory": "ts-node scripts/test-chat-memory.ts",
     "test:api": "ts-node src/ai/test-chat-api.ts",
     "test:store": "ts-node src/store/test-store-api.ts"
   },

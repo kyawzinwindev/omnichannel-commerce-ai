@@ -17,7 +17,7 @@ export class ChatController {
     return await this.chatService.processMessage(
       dto.tenantId,
       dto.message,
-      dto.history || [],
+      dto.conversationId,
     );
   }
 
@@ -31,7 +31,7 @@ export class ChatController {
     return this.chatService.streamMessage(
       dto.tenantId,
       dto.message,
-      dto.history || [],
+      dto.conversationId,
     );
   }
 

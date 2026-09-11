@@ -20,6 +20,10 @@ export class ChatRequestDto {
   message: string;
 
   @IsOptional()
+  @IsString()
+  conversationId?: string;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ChatMessageDto)
