@@ -1,32 +1,83 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { ChatGroq } from '@langchain/groq';
 import { BaseMessage, HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
+import { Runnable } from '@langchain/core/runnables';
 
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
-  private model: ChatGroq;
+  private primaryModel: ChatGoogleGenerativeAI;
+  private fallbackModel: ChatGroq;
+  private modelWithFallback: Runnable;
 
   constructor(private readonly configService: ConfigService) {
-    const apiKey =
+    const googleApiKey =
+      this.configService.get<string>('google.apiKey') ||
+      this.configService.get<string>('GOOGLE_API_KEY') ||
+      process.env.GOOGLE_API_KEY ||
+      'mock_google_key';
+    const geminiModelName =
+      this.configService.get<string>('google.model') ||
+      this.configService.get<string>('GEMINI_MODEL') ||
+      'gemini-1.5-flash-latest';
+
+    const groqApiKey =
       this.configService.get<string>('groq.apiKey') ||
       this.configService.get<string>('GROQ_API_KEY') ||
-      process.env.GROQ_API_KEY;
-    const modelName =
+      process.env.GROQ_API_KEY ||
+      'mock_groq_key';
+    const groqModelName =
       this.configService.get<string>('groq.model') ||
       this.configService.get<string>('GROQ_MODEL') ||
-      'openai/gpt-oss-20b';
+      'llama-3.3-70b-versatile';
 
-    this.model = new ChatGroq({
-      apiKey: apiKey || 'mock_key',
-      model: modelName,
+    this.logger.log(
+      `Initializing LLM Service: Primary [Google ${geminiModelName}], Fallback [Groq ${groqModelName}]`,
+    );
+
+    this.primaryModel = new ChatGoogleGenerativeAI({
+      apiKey: googleApiKey,
+      model: geminiModelName,
       temperature: 0.0,
+      maxRetries: 0,
+    });
+
+    this.fallbackModel = new ChatGroq({
+      apiKey: groqApiKey,
+      model: groqModelName,
+      temperature: 0.0,
+      maxRetries: 0,
+    });
+
+    const backupGroqModel = new ChatGroq({
+      apiKey: groqApiKey,
+      model: 'openai/gpt-oss-20b',
+      temperature: 0.0,
+      maxRetries: 0,
+    });
+
+    const fallbacks =
+      groqModelName === 'openai/gpt-oss-20b'
+        ? [this.fallbackModel]
+        : [this.fallbackModel, backupGroqModel];
+
+    this.modelWithFallback = this.primaryModel.withFallbacks({
+      fallbacks,
     });
   }
 
-  getModel(): ChatGroq {
-    return this.model;
+  getModel(): Runnable {
+    return this.modelWithFallback;
+  }
+
+  getPrimaryModel(): ChatGoogleGenerativeAI {
+    return this.primaryModel;
+  }
+
+  getFallbackModel(): ChatGroq {
+    return this.fallbackModel;
   }
 
   async generateResponse(
@@ -44,12 +95,12 @@ export class LlmService {
     });
 
     try {
-      const response = await this.model.invoke(formattedMessages);
+      const response: any = await this.modelWithFallback.invoke(formattedMessages);
       return typeof response.content === 'string'
         ? response.content
         : JSON.stringify(response.content);
     } catch (error) {
-      this.logger.error(`Groq LLM invocation failed: ${error.message}`);
+      this.logger.error(`LLM invocation failed across primary and fallback: ${error.message}`);
       throw error;
     }
   }
@@ -71,6 +122,6 @@ export class LlmService {
       }
     });
 
-    return await this.model.stream(formattedMessages);
+    return await this.modelWithFallback.stream(formattedMessages);
   }
 }

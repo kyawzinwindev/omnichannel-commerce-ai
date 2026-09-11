@@ -20,6 +20,7 @@
     "test:vector": "ts-node src/ai/test-vector-search.ts",
     "test:chat": "ts-node src/ai/test-chat.ts",
     "test:memory": "ts-node scripts/test-chat-memory.ts",
+    "test:multilingual": "ts-node scripts/test-multilingual.ts",
     "test:api": "ts-node src/ai/test-chat-api.ts",
     "test:store": "ts-node src/store/test-store-api.ts"
   },
@@ -28,6 +29,7 @@
   },
   "dependencies": {
     "@langchain/core": "^0.3.40",
+    "@langchain/google-genai": "^0.2.18",
     "@langchain/groq": "^0.1.3",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.2.3",

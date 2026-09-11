@@ -261,6 +261,13 @@ export class ChatService {
   }> {
     const { intent, extracted_query } = intentResult;
 
+    const languageInstruction = `\n\nLANGUAGE & TONE GUIDELINES:
+- Detect the language of the customer's message and respond fluently in the matching language (Burmese, Thai, or English).
+- English: Natural, friendly, and concise.
+- Burmese (မြန်မာဘာသာ): Use natural, polite, and grammatically standard Burmese with polite particles (ခင်ဗျာ/ရှင့်).
+- Thai (ภาษาไทย): Use natural, polite, and friendly Thai with proper polite particles (ค่ะ/ครับ).
+- Retain exact product names, IDs, and numeric prices while speaking in the customer's preferred language.`;
+
     switch (intent) {
       case IntentType.QUERY_PRODUCT: {
         const searchQuery = extracted_query || userMessage;
@@ -293,6 +300,8 @@ INSTRUCTIONS:
 1. Politely let the customer know we couldn't find an exact match in our current inventory.
 2. Ask if they would like to search for a related category or need help finding something else.`;
         }
+
+        systemContext += languageInstruction;
 
         return {
           systemContext,
@@ -330,6 +339,8 @@ INSTRUCTIONS:
 1. Politely ask the customer to double-check their order number or provide their purchase email.`;
         }
 
+        systemContext += languageInstruction;
+
         return {
           systemContext,
           orderTimeline,
@@ -338,10 +349,12 @@ INSTRUCTIONS:
       }
 
       case IntentType.ADD_TO_CART: {
-        const systemContext = `You are a helpful E-Commerce Shopping Assistant.
+        let systemContext = `You are a helpful E-Commerce Shopping Assistant.
 The customer wants to add an item to their shopping cart.
 Acknowledge the item ("${extracted_query || 'the selected item'}") enthusiastically and confirm it can be added to their bag.
 Ask if they would like to review size/color options or proceed to checkout.`;
+
+        systemContext += languageInstruction;
 
         return {
           systemContext,
@@ -350,18 +363,22 @@ Ask if they would like to review size/color options or proceed to checkout.`;
       }
 
       case IntentType.GREETING: {
-        const systemContext = `You are a friendly, welcoming E-Commerce AI Assistant.
+        let systemContext = `You are a friendly, welcoming E-Commerce AI Assistant.
 Respond warmly to the customer's greeting. Introduce yourself briefly and ask how you can help them today with products, recommendations, or orders.
 Keep it under 2-3 sentences.`;
+
+        systemContext += languageInstruction;
 
         return { systemContext };
       }
 
       case IntentType.UNKNOWN:
       default: {
-        const systemContext = `You are an E-Commerce Store AI Assistant.
+        let systemContext = `You are an E-Commerce Store AI Assistant.
 The customer's message might be ambiguous, general, or outside our standard shopping scope.
 Respond politely, acknowledge their message, and guide them on what you can assist with (e.g., finding products, checking orders, recommending gear).`;
+
+        systemContext += languageInstruction;
 
         return { systemContext };
       }

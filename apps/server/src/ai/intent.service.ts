@@ -74,7 +74,9 @@ Expected JSON schema:
 
       return this.parseIntentResponse(content);
     } catch (error) {
-      this.logger.error(`Intent classification error for input "${userInput}": ${error.message}`);
+      this.logger.warn(
+        `Intent classification LLM call issue for input "${userInput}": ${error.message}. Defaulting to UNKNOWN intent.`,
+      );
       return {
         intent: IntentType.UNKNOWN,
         confidence: 0.0,
