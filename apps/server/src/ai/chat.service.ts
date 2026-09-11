@@ -1,4 +1,6 @@
 import { Inject, Injectable, Logger, MessageEvent } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { IntentService, IntentType, IntentResult } from './intent.service';
 import { LlmService } from './llm.service';
 import {
@@ -10,6 +12,7 @@ import {
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { RedisChatMessageHistory } from '../redis/redis-chat-history';
+import { VectorSearchService, ScoredProduct } from './vector-search.service';
 import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { Observable } from 'rxjs';
@@ -53,6 +56,9 @@ export class ChatService {
     private readonly llmService: LlmService,
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
+    private readonly vectorSearchService: VectorSearchService,
+    @InjectQueue('chat-persistence')
+    private readonly chatPersistenceQueue: Queue,
   ) {}
 
   /**
@@ -86,10 +92,10 @@ export class ChatService {
 
   /**
    * Main conversational orchestrator:
-   * 1. Classifies intent of user input.
+   * 1. Parallel pre-execution (Intent recognition, initial vector context, and Redis history warming).
    * 2. Retrieves store data (Products or Order Timeline) from active StoreProvider.
-   * 3. Synthesizes a response using Groq LLM + LangChain RunnableWithMessageHistory (Redis cached).
-   * 4. Persists conversation and message history to PostgreSQL.
+   * 3. Synthesizes a response using LLM + LangChain RunnableWithMessageHistory.
+   * 4. Enqueues background persistence to BullMQ queue without blocking response delivery.
    */
   async processMessage(
     tenantId: string,
@@ -102,8 +108,20 @@ export class ChatService {
     );
 
     try {
-      // 1. Intent Recognition
-      const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
+      // 1. Parallel Pre-execution: Intent Recognition, Vector Store Context & Redis Memory Retrieval
+      const [intentResult, initialVectorProducts] = await Promise.all([
+        this.intentService.classifyIntent(userMessage),
+        this.vectorSearchService
+          .searchSimilarProducts(tenantId, userMessage, 4, 0.3)
+          .catch((err) => {
+            this.logger.debug(`Initial vector search fallback/skipped: ${err.message}`);
+            return [] as ScoredProduct[];
+          }),
+        this.redisService
+          .lrange(`chat:history:${tenantId}:${activeConversationId}`, 0, -1)
+          .catch(() => [] as string[]),
+      ]);
+
       const { intent, confidence, extracted_query } = intentResult;
 
       this.logger.log(
@@ -115,6 +133,7 @@ export class ChatService {
         tenantId,
         userMessage,
         intentResult,
+        initialVectorProducts,
       );
 
       // 3. Synthesize LLM Response via LangChain chain with Redis history
@@ -136,10 +155,23 @@ export class ChatService {
           ? response.content
           : JSON.stringify(response.content);
 
-      // 4. Asynchronously persist conversation & messages to PostgreSQL (non-blocking)
-      this.persistHistory(tenantId, activeConversationId, userMessage, reply).catch((err) => {
-        this.logger.warn(`Failed to persist chat message to PostgreSQL: ${err.message}`);
-      });
+      // 4. Decouple DB persistence: dispatch background job to BullMQ queue immediately
+      this.chatPersistenceQueue
+        .add('save-history', {
+          tenantId,
+          conversationId: activeConversationId,
+          userMessage,
+          aiResponse: reply,
+          metadata,
+        })
+        .then((job) => {
+          this.logger.log(
+            `Enqueued background DB persistence job [${job.id}] for conversation [${activeConversationId}]`,
+          );
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to enqueue chat persistence job to BullMQ: ${err.message}`);
+        });
 
       return {
         conversationId: activeConversationId,
@@ -173,7 +205,7 @@ export class ChatService {
   }
 
   /**
-   * Real-time SSE Token Streaming Orchestrator with LangChain Redis History
+   * Real-time SSE Token Streaming Orchestrator with LangChain Redis History & Decoupled BullMQ Persistence
    */
   streamMessage(
     tenantId: string,
@@ -185,11 +217,24 @@ export class ChatService {
     return new Observable<MessageEvent>((subscriber) => {
       (async () => {
         try {
-          const intentResult: IntentResult = await this.intentService.classifyIntent(userMessage);
+          // Parallel Pre-execution: Intent Recognition, Vector Store Context & Redis Memory Retrieval
+          const [intentResult, initialVectorProducts] = await Promise.all([
+            this.intentService.classifyIntent(userMessage),
+            this.vectorSearchService
+              .searchSimilarProducts(tenantId, userMessage, 4, 0.3)
+              .catch((err) => {
+                this.logger.debug(`Initial vector search fallback/skipped: ${err.message}`);
+                return [] as ScoredProduct[];
+              }),
+            this.redisService
+              .lrange(`chat:history:${tenantId}:${activeConversationId}`, 0, -1)
+              .catch(() => [] as string[]),
+          ]);
+
           const { intent, confidence } = intentResult;
 
           const { systemContext, products, orderTimeline, metadata } =
-            await this.prepareContext(tenantId, userMessage, intentResult);
+            await this.prepareContext(tenantId, userMessage, intentResult, initialVectorProducts);
 
           // Emit Metadata Event
           subscriber.next({
@@ -237,12 +282,23 @@ export class ChatService {
             }
           }
 
-          // Persist history in PostgreSQL in background
-          this.persistHistory(tenantId, activeConversationId, userMessage, fullReply).catch(
-            (err) => {
-              this.logger.warn(`Failed to persist stream chat history to PostgreSQL: ${err.message}`);
-            },
-          );
+          // Decouple DB persistence: dispatch background job to BullMQ queue immediately
+          this.chatPersistenceQueue
+            .add('save-history', {
+              tenantId,
+              conversationId: activeConversationId,
+              userMessage,
+              aiResponse: fullReply,
+              metadata,
+            })
+            .then((job) => {
+              this.logger.log(
+                `Enqueued background DB persistence job [${job.id}] for streamed conv [${activeConversationId}]`,
+              );
+            })
+            .catch((err) => {
+              this.logger.warn(`Failed to enqueue stream chat persistence job to BullMQ: ${err.message}`);
+            });
 
           // Emit Done Event
           subscriber.next({
@@ -280,6 +336,7 @@ export class ChatService {
     tenantId: string,
     userMessage: string,
     intentResult: IntentResult,
+    initialVectorProducts?: ScoredProduct[],
   ): Promise<{
     systemContext: string;
     products?: ProductItem[];
@@ -298,11 +355,31 @@ export class ChatService {
     switch (intent) {
       case IntentType.QUERY_PRODUCT: {
         const searchQuery = extracted_query || userMessage;
-        const products: ProductItem[] = await this.storeProvider.getProductList(
-          tenantId,
-          searchQuery,
-          4,
-        );
+        let products: ProductItem[] = [];
+
+        // If pre-fetched vector products match and are available, reuse them
+        if (
+          initialVectorProducts &&
+          initialVectorProducts.length > 0 &&
+          (!extracted_query || extracted_query.toLowerCase() === userMessage.toLowerCase())
+        ) {
+          products = initialVectorProducts.map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            price: Number(p.price),
+            category: p.category,
+            inStock: true,
+            attributes: p.attributes,
+            similarity: p.similarity,
+          }));
+        } else {
+          products = await this.storeProvider.getProductList(
+            tenantId,
+            searchQuery,
+            4,
+          );
+        }
 
         let systemContext = `You are a helpful and knowledgeable E-Commerce AI Assistant.
 The customer is asking about products in our store.`;
@@ -415,56 +492,5 @@ Respond politely, acknowledge their message, and guide them on what you can assi
   private extractOrderNumber(text: string): string | null {
     const match = text.match(/#?([0-9]{4,8})/);
     return match ? match[1] : null;
-  }
-
-  /**
-   * Saves message into conversation table in PostgreSQL
-   */
-  private async persistHistory(
-    tenantId: string,
-    conversationId: string,
-    userMessage: string,
-    assistantReply: string,
-  ): Promise<void> {
-    try {
-      // Ensure tenant exists
-      await this.prisma.tenant.upsert({
-        where: { id: tenantId },
-        update: {},
-        create: { id: tenantId, name: 'Default Store' },
-      });
-
-      // Find or create conversation for the specific conversationId
-      let conversation = await this.prisma.conversation.findUnique({
-        where: { id: conversationId },
-      });
-
-      if (!conversation) {
-        conversation = await this.prisma.conversation.create({
-          data: {
-            id: conversationId,
-            tenantId,
-          },
-        });
-      }
-
-      // Create User and Assistant message records in PostgreSQL
-      await this.prisma.message.createMany({
-        data: [
-          {
-            conversationId: conversation.id,
-            senderType: 'USER',
-            content: userMessage,
-          },
-          {
-            conversationId: conversation.id,
-            senderType: 'ASSISTANT',
-            content: assistantReply,
-          },
-        ],
-      });
-    } catch (err) {
-      this.logger.warn(`Could not persist chat history to PostgreSQL: ${err.message}`);
-    }
   }
 }

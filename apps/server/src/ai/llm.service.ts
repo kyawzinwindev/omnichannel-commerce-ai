@@ -40,28 +40,36 @@ export class LlmService {
     this.primaryModel = new ChatGoogleGenerativeAI({
       apiKey: googleApiKey,
       model: geminiModelName,
-      temperature: 0.0,
+      temperature: 0.3,
+      maxOutputTokens: 500,
       maxRetries: 0,
     });
 
     this.fallbackModel = new ChatGroq({
       apiKey: groqApiKey,
       model: groqModelName,
-      temperature: 0.0,
+      temperature: 0.3,
+      maxTokens: 500,
       maxRetries: 0,
     });
 
     const backupGroqModel = new ChatGroq({
       apiKey: groqApiKey,
-      model: 'openai/gpt-oss-20b',
-      temperature: 0.0,
+      model: 'llama-3.1-8b-instant',
+      temperature: 0.3,
+      maxTokens: 500,
       maxRetries: 0,
     });
 
-    const fallbacks =
-      groqModelName === 'openai/gpt-oss-20b'
-        ? [this.fallbackModel]
-        : [this.fallbackModel, backupGroqModel];
+    const safetyGroqModel = new ChatGroq({
+      apiKey: groqApiKey,
+      model: 'openai/gpt-oss-20b',
+      temperature: 0.3,
+      maxTokens: 500,
+      maxRetries: 0,
+    });
+
+    const fallbacks = [this.fallbackModel, backupGroqModel, safetyGroqModel];
 
     this.modelWithFallback = this.primaryModel.withFallbacks({
       fallbacks,

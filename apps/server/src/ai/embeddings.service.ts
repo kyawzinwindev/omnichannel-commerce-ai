@@ -4,25 +4,42 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 export class EmbeddingsService implements OnModuleInit {
   private readonly logger = new Logger(EmbeddingsService.name);
   private pipelineInstance: any = null;
+  private pipelinePromise: Promise<any> | null = null;
   private readonly modelName = 'Xenova/all-MiniLM-L6-v2';
 
   async onModuleInit() {
-    // Optionally warm-up / initialize the pipeline in background
-    this.initPipeline().catch((err) => {
-      this.logger.warn(`Deferred embeddings model load: ${err.message}`);
-    });
+    try {
+      this.logger.log(`Warming up embeddings model: ${this.modelName}...`);
+      const extractor = await this.initPipeline();
+      // Perform warm-up inference to prime memory & tokenizer
+      await extractor('warmup search query', {
+        pooling: 'mean',
+        normalize: true,
+      });
+      this.logger.log(`Embeddings model ${this.modelName} loaded and warmed up successfully.`);
+    } catch (err) {
+      this.logger.warn(`Embeddings model load/warmup warning: ${err.message}`);
+    }
   }
 
   private async initPipeline() {
-    if (!this.pipelineInstance) {
-      this.logger.log(`Loading embeddings model: ${this.modelName}...`);
-      const { pipeline } = await import('@xenova/transformers');
-      this.pipelineInstance = await pipeline('feature-extraction', this.modelName, {
-        quantized: true,
-      });
-      this.logger.log(`Embeddings model ${this.modelName} loaded successfully.`);
+    if (this.pipelineInstance) {
+      return this.pipelineInstance;
     }
-    return this.pipelineInstance;
+
+    if (!this.pipelinePromise) {
+      this.pipelinePromise = (async () => {
+        this.logger.log(`Loading embeddings model: ${this.modelName}...`);
+        const { pipeline } = await import('@xenova/transformers');
+        const instance = await pipeline('feature-extraction', this.modelName, {
+          quantized: true,
+        });
+        this.pipelineInstance = instance;
+        return instance;
+      })();
+    }
+
+    return this.pipelinePromise;
   }
 
   /**
@@ -49,3 +66,4 @@ export class EmbeddingsService implements OnModuleInit {
     return results;
   }
 }
+

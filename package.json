@@ -16,6 +16,7 @@
     "test:chat": "npm --workspace=apps/server run test:chat",
     "test:api": "npm --workspace=apps/server run test:api",
     "test:store": "npm --workspace=apps/server run test:store",
+    "test:chat:benchmark": "npm --workspace=apps/server run test:chat:benchmark",
     "prisma:seed": "npm --workspace=apps/server run prisma:seed"
   }
 }

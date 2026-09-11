@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { EmbeddingsService } from './embeddings.service';
 import { LlmService } from './llm.service';
 import { IntentService } from './intent.service';
@@ -8,6 +9,11 @@ import { ChatController } from './chat.controller';
 
 @Global()
 @Module({
+  imports: [
+    BullModule.registerQueue({
+      name: 'chat-persistence',
+    }),
+  ],
   controllers: [ChatController],
   providers: [EmbeddingsService, LlmService, IntentService, VectorSearchService, ChatService],
   exports: [EmbeddingsService, LlmService, IntentService, VectorSearchService, ChatService],
