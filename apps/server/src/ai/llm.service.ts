@@ -31,7 +31,7 @@ export class LlmService {
     const groqModelName =
       this.configService.get<string>('groq.model') ||
       this.configService.get<string>('GROQ_MODEL') ||
-      'llama-3.3-70b-versatile';
+      'openai/gpt-oss-20b';
 
     this.logger.log(
       `Initializing LLM Service: Primary [Google ${geminiModelName}], Fallback [Groq ${groqModelName}]`,
@@ -53,23 +53,7 @@ export class LlmService {
       maxRetries: 0,
     });
 
-    const backupGroqModel = new ChatGroq({
-      apiKey: groqApiKey,
-      model: 'llama-3.1-8b-instant',
-      temperature: 0.3,
-      maxTokens: 500,
-      maxRetries: 0,
-    });
-
-    const safetyGroqModel = new ChatGroq({
-      apiKey: groqApiKey,
-      model: 'openai/gpt-oss-20b',
-      temperature: 0.3,
-      maxTokens: 500,
-      maxRetries: 0,
-    });
-
-    const fallbacks = [this.fallbackModel, backupGroqModel, safetyGroqModel];
+    const fallbacks = [this.fallbackModel];
 
     this.modelWithFallback = this.primaryModel.withFallbacks({
       fallbacks,
