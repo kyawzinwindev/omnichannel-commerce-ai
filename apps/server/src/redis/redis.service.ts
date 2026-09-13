@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { UserSessionState, ChatStage } from './session-state';
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
@@ -83,6 +84,58 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.logger.error(`Error deleting key ${key} from Redis: ${error.message}`);
     }
+  }
+
+  /**
+   * Retrieves conversation session state from Redis.
+   * Returns a default IDLE session if not found.
+   */
+  async getSessionState(tenantId: string, sessionId: string): Promise<UserSessionState> {
+    const key = `session:state:${tenantId}:${sessionId}`;
+    const raw = await this.get(key);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        return {
+          stage: parsed.stage || ChatStage.IDLE,
+          cart: parsed.cart || [],
+          draftOrder: parsed.draftOrder || {},
+          lastUpdated: parsed.lastUpdated,
+        };
+      } catch (err) {
+        this.logger.warn(`Failed to parse session state for ${key}: ${err.message}`);
+      }
+    }
+    return {
+      stage: ChatStage.IDLE,
+      cart: [],
+      draftOrder: {},
+    };
+  }
+
+  /**
+   * Persists conversation session state in Redis with TTL.
+   */
+  async setSessionState(
+    tenantId: string,
+    sessionId: string,
+    state: UserSessionState,
+    ttlSeconds = 86400, // 24 hours
+  ): Promise<void> {
+    const key = `session:state:${tenantId}:${sessionId}`;
+    const payload: UserSessionState = {
+      ...state,
+      lastUpdated: Date.now(),
+    };
+    await this.set(key, JSON.stringify(payload), ttlSeconds);
+  }
+
+  /**
+   * Clears conversation session state in Redis.
+   */
+  async clearSessionState(tenantId: string, sessionId: string): Promise<void> {
+    const key = `session:state:${tenantId}:${sessionId}`;
+    await this.del(key);
   }
 
   async onModuleDestroy() {

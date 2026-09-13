@@ -17,6 +17,8 @@ import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
+import { ChatStage, UserSessionState } from '../redis/session-state';
+import { buildStageAwareSystemPrompt } from './chat-response.prompt';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -91,11 +93,7 @@ export class ChatService {
   }
 
   /**
-   * Main conversational orchestrator:
-   * 1. Parallel pre-execution (Intent recognition, initial vector context, and Redis history warming).
-   * 2. Retrieves store data (Products or Order Summary) from active StoreProvider.
-   * 3. Synthesizes a response using LLM + LangChain RunnableWithMessageHistory.
-   * 4. Enqueues background persistence to BullMQ queue without blocking response delivery.
+   * Main conversational orchestrator with Redis State-Driven Session Flow
    */
   async processMessage(
     tenantId: string,
@@ -108,35 +106,33 @@ export class ChatService {
     );
 
     try {
-      // 1. Parallel Pre-execution: Intent Recognition, Vector Store Context & Redis Memory Retrieval
-      const [intentResult, initialVectorProducts] = await Promise.all([
-        this.intentService.classifyIntent(userMessage),
-        this.vectorSearchService
-          .searchSimilarProducts(tenantId, userMessage, 4, 0.3)
-          .catch((err) => {
-            this.logger.debug(`Initial vector search fallback/skipped: ${err.message}`);
-            return [] as ScoredProduct[];
-          }),
-        this.redisService
-          .lrange(`chat:history:${tenantId}:${activeConversationId}`, 0, -1)
-          .catch(() => [] as string[]),
-      ]);
+      // 1. Fetch existing session state from Redis
+      let session = await this.redisService.getSessionState(tenantId, activeConversationId);
 
-      const { intent, confidence, extracted_query } = intentResult;
+      // 2. Classify intent with stage awareness
+      const intentResult = await this.intentService.classifyIntent(
+        userMessage,
+        session.stage,
+        session.draftOrder,
+      );
 
       this.logger.log(
-        `Detected Intent: ${intent} (Confidence: ${(confidence * 100).toFixed(1)}%, Query: "${extracted_query}")`,
+        `Detected Intent: ${intentResult.intent} (Confidence: ${(intentResult.confidence * 100).toFixed(1)}%, Stage: ${session.stage})`,
       );
 
-      // 2. Prepare Context & Retrieve Data via StoreProvider
-      const { systemContext, products, orderSummary, metadata } = await this.prepareContext(
-        tenantId,
-        userMessage,
-        intentResult,
-        initialVectorProducts,
-      );
+      // 3. Process State Machine & Store Data
+      const { systemContext, products, orderSummary, updatedSession, metadata } =
+        await this.handleSessionAndContext(
+          tenantId,
+          userMessage,
+          intentResult,
+          session,
+          activeConversationId,
+        );
 
-      // 3. Synthesize LLM Response via LangChain chain with Redis history
+      session = updatedSession;
+
+      // 4. Synthesize LLM Response via LangChain chain with Redis history
       const runnableChain = this.createHistoryRunnable();
       const sessionId = `${tenantId}:${activeConversationId}`;
 
@@ -155,14 +151,14 @@ export class ChatService {
           ? response.content
           : JSON.stringify(response.content);
 
-      // 4. Decouple DB persistence: dispatch background job to BullMQ queue immediately
+      // 5. Decouple DB persistence: dispatch background job to BullMQ queue immediately
       this.chatPersistenceQueue
         .add('save-history', {
           tenantId,
           conversationId: activeConversationId,
           userMessage,
           aiResponse: reply,
-          metadata,
+          metadata: { ...metadata, stage: session.stage },
         })
         .then((job) => {
           this.logger.log(
@@ -175,13 +171,13 @@ export class ChatService {
 
       return {
         conversationId: activeConversationId,
-        intent,
-        confidence,
+        intent: intentResult.intent,
+        confidence: intentResult.confidence,
         reply,
         products,
         suggestedProducts: products,
         orderSummary,
-        metadata,
+        metadata: { ...metadata, stage: session.stage },
       };
     } catch (error) {
       this.logger.warn(
@@ -205,7 +201,7 @@ export class ChatService {
   }
 
   /**
-   * Real-time SSE Token Streaming Orchestrator with LangChain Redis History & Decoupled BullMQ Persistence
+   * Real-time SSE Token Streaming Orchestrator with Redis Session Flow
    */
   streamMessage(
     tenantId: string,
@@ -217,39 +213,42 @@ export class ChatService {
     return new Observable<MessageEvent>((subscriber) => {
       (async () => {
         try {
-          // Parallel Pre-execution: Intent Recognition, Vector Store Context & Redis Memory Retrieval
-          const [intentResult, initialVectorProducts] = await Promise.all([
-            this.intentService.classifyIntent(userMessage),
-            this.vectorSearchService
-              .searchSimilarProducts(tenantId, userMessage, 4, 0.3)
-              .catch((err) => {
-                this.logger.debug(`Initial vector search fallback/skipped: ${err.message}`);
-                return [] as ScoredProduct[];
-              }),
-            this.redisService
-              .lrange(`chat:history:${tenantId}:${activeConversationId}`, 0, -1)
-              .catch(() => [] as string[]),
-          ]);
+          // 1. Fetch existing session state from Redis
+          let session = await this.redisService.getSessionState(tenantId, activeConversationId);
 
-          const { intent, confidence } = intentResult;
+          // 2. Classify intent with stage awareness
+          const intentResult = await this.intentService.classifyIntent(
+            userMessage,
+            session.stage,
+            session.draftOrder,
+          );
 
-          const { systemContext, products, orderSummary, metadata } =
-            await this.prepareContext(tenantId, userMessage, intentResult, initialVectorProducts);
+          // 3. Process State Machine & Store Data
+          const { systemContext, products, orderSummary, updatedSession, metadata } =
+            await this.handleSessionAndContext(
+              tenantId,
+              userMessage,
+              intentResult,
+              session,
+              activeConversationId,
+            );
 
-          // Emit Metadata Event
+          session = updatedSession;
+
+          // 4. Emit Metadata Event
           subscriber.next({
             data: JSON.stringify({
               type: 'meta',
               conversationId: activeConversationId,
-              intent,
-              confidence,
+              intent: intentResult.intent,
+              confidence: intentResult.confidence,
               products,
               orderSummary,
-              metadata,
+              metadata: { ...metadata, stage: session.stage },
             } as StreamPayload),
           });
 
-          // Stream LLM tokens via RunnableWithMessageHistory
+          // 5. Stream LLM tokens via RunnableWithMessageHistory
           const runnableChain = this.createHistoryRunnable();
           const sessionId = `${tenantId}:${activeConversationId}`;
 
@@ -282,14 +281,14 @@ export class ChatService {
             }
           }
 
-          // Decouple DB persistence: dispatch background job to BullMQ queue immediately
+          // 6. Decouple DB persistence: dispatch background job to BullMQ queue immediately
           this.chatPersistenceQueue
             .add('save-history', {
               tenantId,
               conversationId: activeConversationId,
               userMessage,
               aiResponse: fullReply,
-              metadata,
+              metadata: { ...metadata, stage: session.stage },
             })
             .then((job) => {
               this.logger.log(
@@ -300,7 +299,7 @@ export class ChatService {
               this.logger.warn(`Failed to enqueue stream chat persistence job to BullMQ: ${err.message}`);
             });
 
-          // Emit Done Event
+          // 7. Emit Done Event
           subscriber.next({
             data: JSON.stringify({
               type: 'done',
@@ -330,169 +329,166 @@ export class ChatService {
   }
 
   /**
-   * Prepares system prompt and context by querying the pluggable StoreProvider
+   * Orchestrates the State Machine transitions and loads store data
    */
-  private async prepareContext(
+  private async handleSessionAndContext(
     tenantId: string,
     userMessage: string,
     intentResult: IntentResult,
-    initialVectorProducts?: ScoredProduct[],
+    session: UserSessionState,
+    conversationId: string,
   ): Promise<{
     systemContext: string;
     products?: ProductItem[];
     orderSummary?: OrderSummaryResult | null;
+    updatedSession: UserSessionState;
     metadata?: Record<string, any>;
   }> {
-    const { intent, extracted_query } = intentResult;
+    const { intent, extracted_query, extracted_info } = intentResult;
+    let products: ProductItem[] | undefined = undefined;
+    let orderSummary: OrderSummaryResult | null | undefined = undefined;
 
-    const languageInstruction = `\n\nLANGUAGE & TONE GUIDELINES:
-- Detect the language of the customer's message and respond fluently in the matching language (Burmese, Thai, or English).
-- English: Natural, friendly, and concise.
-- Burmese (မြန်မာဘာသာ): Use natural, polite, and grammatically standard Burmese with polite particles (ခင်ဗျာ/ရှင့်).
-- Thai (ภาษาไทย): Use natural, polite, and friendly Thai with proper polite particles (ค่ะ/ครับ).
-- Retain exact product names, IDs, and numeric prices while speaking in the customer's preferred language.`;
+    // 1. Handle State Transitions based on Intent & Current Stage
+    if (intent === IntentType.CANCEL_ORDER) {
+      session.stage = ChatStage.IDLE;
+      session.cart = [];
+      session.draftOrder = {};
+      await this.redisService.clearSessionState(tenantId, conversationId);
+    } else if (intent === IntentType.ADD_TO_CART) {
+      const searchTarget = extracted_query || userMessage;
+      const matchedProducts = await this.storeProvider.getProductList(tenantId, searchTarget, 1);
+      const topProduct = matchedProducts[0] || {
+        id: `item-${Date.now()}`,
+        name: extracted_query || 'Selected Product',
+        price: 128.0,
+        inStock: true,
+      };
 
-    switch (intent) {
-      case IntentType.QUERY_PRODUCT: {
-        const searchQuery = extracted_query || userMessage;
-        let products: ProductItem[] = [];
+      const quantity = extracted_info?.quantity || 1;
+      const existingItem = session.cart.find(
+        (c) => c.productId === topProduct.id || c.name.toLowerCase() === topProduct.name.toLowerCase(),
+      );
 
-        // If pre-fetched vector products match and are available, reuse them
-        if (
-          initialVectorProducts &&
-          initialVectorProducts.length > 0 &&
-          (!extracted_query || extracted_query.toLowerCase() === userMessage.toLowerCase())
-        ) {
-          products = initialVectorProducts.map((p) => ({
-            id: p.id,
-            name: p.name,
-            description: p.description,
-            price: Number(p.price),
-            category: p.category,
-            inStock: true,
-            attributes: p.attributes,
-            similarity: p.similarity,
-          }));
-        } else {
-          products = await this.storeProvider.getProductList(
+      if (existingItem) {
+        existingItem.quantity += quantity;
+      } else {
+        session.cart.push({
+          productId: topProduct.id,
+          name: topProduct.name,
+          price: Number(topProduct.price),
+          quantity,
+        });
+      }
+
+      session.stage = ChatStage.COLLECTING_USER_INFO;
+    } else if (
+      session.stage === ChatStage.COLLECTING_USER_INFO ||
+      intent === IntentType.COLLECT_INFO
+    ) {
+      if (extracted_info) {
+        if (extracted_info.name && !session.draftOrder.name) {
+          session.draftOrder.name = extracted_info.name;
+        }
+        if (extracted_info.phone) {
+          session.draftOrder.phone = extracted_info.phone;
+        }
+        if (extracted_info.address) {
+          session.draftOrder.address = extracted_info.address;
+        }
+      }
+
+      // Check if all 3 fields are provided -> transition to CONFIRMING_ORDER
+      if (session.draftOrder.name && session.draftOrder.phone && session.draftOrder.address) {
+        session.stage = ChatStage.CONFIRMING_ORDER;
+      }
+    } else if (
+      session.stage === ChatStage.CONFIRMING_ORDER &&
+      intent === IntentType.CONFIRM_ORDER
+    ) {
+      // User confirms order! Create the order and reset session
+      const orderNumber = `ORD-${Math.floor(10000 + Math.random() * 90000)}`;
+      const totalAmount =
+        session.cart.reduce((sum, item) => sum + item.price * item.quantity, 0) || 128.0;
+
+      orderSummary = {
+        orderNumber,
+        status: 'accepted',
+        customerName: session.draftOrder.name || 'Valued Customer',
+        shippingAddress: `${session.draftOrder.address} (Phone: ${session.draftOrder.phone || 'N/A'})`,
+        items:
+          session.cart.length > 0
+            ? session.cart.map((c, i) => ({
+                id: c.productId || `item-${i + 1}`,
+                name: c.name,
+                quantity: c.quantity,
+                price: c.price,
+              }))
+            : [{ id: 'item-1', name: 'Store Product', quantity: 1, price: totalAmount }],
+        totalAmount,
+        orderDate: new Date().toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+      };
+
+      try {
+        await this.prisma.order.create({
+          data: {
             tenantId,
-            searchQuery,
-            4,
-          );
-        }
-
-        let systemContext = `You are a helpful and knowledgeable E-Commerce AI Assistant.
-The customer is asking about products in our store.`;
-
-        if (products.length > 0) {
-          const formattedCatalog = products
-            .map(
-              (p, idx) =>
-                `${idx + 1}. Product: "${p.name}" (ID: ${p.id})\n   Price: $${p.price}\n   Category: ${p.category || 'N/A'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
-            )
-            .join('\n\n');
-
-          systemContext += `\n\nRELEVANT PRODUCTS FOUND IN STORE CATALOG:\n${formattedCatalog}\n
-INSTRUCTIONS:
-1. Recommend and describe the matching products above in a friendly, conversational tone.
-2. Highlight key features, colors, and prices accurately based ONLY on the provided catalog data.
-3. If multiple options match, briefly compare them to help the customer decide.
-4. Keep the reply concise, professional, and engaging.`;
-        } else {
-          systemContext += `\n\nNO MATCHING PRODUCTS FOUND in our catalog for "${searchQuery}".
-INSTRUCTIONS:
-1. Politely let the customer know we couldn't find an exact match in our current inventory.
-2. Ask if they would like to search for a related category or need help finding something else.`;
-        }
-
-        systemContext += languageInstruction;
-
-        return {
-          systemContext,
-          products,
-          metadata: { searchQuery, matchedCount: products.length },
-        };
+            orderNumber,
+            customerEmail: session.draftOrder.phone
+              ? `${session.draftOrder.phone.replace(/[^0-9]/g, '')}@customer.local`
+              : 'customer@store.local',
+            totalAmount,
+            status: 'accepted',
+          },
+        });
+      } catch (dbErr) {
+        this.logger.debug(`Could not save order to Prisma: ${dbErr.message}`);
       }
 
-      case IntentType.CHECK_ORDER: {
-        const orderQuery = extracted_query || this.extractOrderNumber(userMessage) || '10492';
-        const orderSummary = await this.storeProvider.getOrderSummary(tenantId, orderQuery);
-
-        let systemContext = `You are an E-Commerce Order Support Assistant.
-The customer is inquiring about the status of an order.`;
-
-        if (orderSummary) {
-          const itemsList = orderSummary.items
-            .map(
-              (item, idx) =>
-                `${idx + 1}. ${item.name} (Qty: ${item.quantity}) - $${(item.price * item.quantity).toFixed(2)}`,
-            )
-            .join('\n');
-
-          systemContext += `\n\nORDER SUMMARY DETAILS FOR #${orderSummary.orderNumber}:
-Status: ${orderSummary.status.toUpperCase()}
-Customer Name: ${orderSummary.customerName || 'Valued Customer'}
-Shipping Address: ${orderSummary.shippingAddress || 'N/A'}
-Order Date: ${orderSummary.orderDate || 'Recent'}
-Items:
-${itemsList}
-Total Amount: $${orderSummary.totalAmount.toFixed(2)}
-
-INSTRUCTIONS:
-1. Provide a clear, professional summary update for order #${orderSummary.orderNumber}.
-2. State the order status (${orderSummary.status}), recipient name, shipping address, and purchased item details.
-3. Confirm the total amount ($${orderSummary.totalAmount.toFixed(2)}).
-4. Keep the response concise and friendly.`;
-        } else {
-          systemContext += `\n\nNo order record was found for ID "${orderQuery}".
-INSTRUCTIONS:
-1. Politely ask the customer to double-check their order number or provide their purchase email.`;
-        }
-
-        systemContext += languageInstruction;
-
-        return {
-          systemContext,
-          orderSummary,
-          metadata: { orderId: orderQuery, found: !!orderSummary },
-        };
-      }
-
-      case IntentType.ADD_TO_CART: {
-        let systemContext = `You are a helpful E-Commerce Shopping Assistant.
-The customer wants to add an item to their shopping cart.
-Acknowledge the item ("${extracted_query || 'the selected item'}") enthusiastically and confirm it can be added to their bag.
-Ask if they would like to review size/color options or proceed to checkout.`;
-
-        systemContext += languageInstruction;
-
-        return {
-          systemContext,
-          metadata: { item: extracted_query },
-        };
-      }
-
-      case IntentType.GREETING: {
-        let systemContext = `You are a friendly, welcoming E-Commerce AI Assistant.
-Respond warmly to the customer's greeting. Introduce yourself briefly and ask how you can help them today with products, recommendations, or orders.
-Keep it under 2-3 sentences.`;
-
-        systemContext += languageInstruction;
-
-        return { systemContext };
-      }
-
-      case IntentType.UNKNOWN:
-      default: {
-        let systemContext = `You are an E-Commerce Store AI Assistant.
-The customer's message might be ambiguous, general, or outside our standard shopping scope.
-Respond politely, acknowledge their message, and guide them on what you can assist with (e.g., finding products, checking orders, recommending gear).`;
-
-        systemContext += languageInstruction;
-
-        return { systemContext };
-      }
+      // Clear session from Redis
+      await this.redisService.clearSessionState(tenantId, conversationId);
+      session = {
+        stage: ChatStage.IDLE,
+        cart: [],
+        draftOrder: {},
+      };
     }
+
+    // Persist updated session state if not in cleared idle state
+    if (session.stage !== ChatStage.IDLE || session.cart.length > 0) {
+      await this.redisService.setSessionState(tenantId, conversationId, session);
+    }
+
+    // 2. Fetch Catalog / Order Data as needed
+    if (intent === IntentType.GENERAL_CATALOG_QUERY) {
+      products = await this.storeProvider.getProductList(tenantId, undefined, 4);
+    } else if (intent === IntentType.QUERY_PRODUCT) {
+      const searchQuery = extracted_query || userMessage;
+      products = await this.storeProvider.getProductList(tenantId, searchQuery, 4);
+    } else if (intent === IntentType.CHECK_ORDER) {
+      const orderQuery = extracted_query || this.extractOrderNumber(userMessage) || '10492';
+      orderSummary = await this.storeProvider.getOrderSummary(tenantId, orderQuery);
+    }
+
+    // 3. Build Stage-Aware System Prompt
+    const systemContext = buildStageAwareSystemPrompt({
+      intent,
+      session,
+      products,
+      orderSummary,
+      searchQuery: extracted_query,
+    });
+
+    return {
+      systemContext,
+      products,
+      orderSummary,
+      updatedSession: session,
+      metadata: { intent, stage: session.stage },
+    };
   }
 
   private extractOrderNumber(text: string): string | null {
