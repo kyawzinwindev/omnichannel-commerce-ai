@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   IStoreProvider,
-  OrderTimelineResult,
+  OrderSummaryResult,
   ProductItem,
 } from '../interfaces/store-provider.interface';
 import { RedisService } from '../../redis/redis.service';
@@ -70,39 +70,29 @@ export class ExternalClientApiProvider implements IStoreProvider {
   }
 
   /**
-   * Fetches order timeline from external merchant shipping / OMS API.
+   * Fetches order summary from external merchant OMS API.
    */
-  async getOrderTimeline(tenantId: string, orderNumber: string): Promise<OrderTimelineResult | null> {
+  async getOrderSummary(tenantId: string, orderNumber: string): Promise<OrderSummaryResult | null> {
     const cleanOrderNumber = orderNumber.replace(/^#/, '').trim();
     this.logger.log(
-      `[ExternalClientApiProvider] Fetching tracking for order #${cleanOrderNumber} from client OMS`,
+      `[ExternalClientApiProvider] Fetching order summary for #${cleanOrderNumber} from client OMS`,
     );
 
     return {
       orderNumber: cleanOrderNumber,
-      status: 'in_transit',
-      customerEmail: 'customer@externalstore.com',
-      totalAmount: 128.0,
-      steps: [
+      status: 'accepted',
+      customerName: 'Alex Johnson',
+      shippingAddress: '123 Market St, Suite 400, San Francisco, CA 94105',
+      items: [
         {
-          title: 'Order Confirmed',
-          timestamp: 'Sep 6, 9:14 AM',
-          status: 'completed',
-          icon: 'check',
-        },
-        {
-          title: 'Dispatched with Carrier',
-          timestamp: 'Sep 8, 11:20 AM',
-          status: 'current',
-          icon: 'truck',
-        },
-        {
-          title: 'Estimated Delivery',
-          timestamp: 'Estimated Sep 11',
-          status: 'pending',
-          icon: 'home',
+          id: 'ext-item-1',
+          name: 'Canvas Weekender Bag (Store Edition)',
+          quantity: 1,
+          price: 128.0,
         },
       ],
+      totalAmount: 128.0,
+      orderDate: 'Sep 6, 2026',
     };
   }
 }

@@ -6,7 +6,7 @@ import { ChatHeader } from './ChatHeader';
 import { MessageList } from './MessageList';
 import { TypingIndicator } from './TypingIndicator';
 import { ChatInput } from './ChatInput';
-import { ChatMessage, ProductData, OrderTimelineData } from '../types/chat';
+import { ChatMessage, ProductData, OrderSummaryData } from '../types/chat';
 
 export interface ChatWidgetProps {
   tenantId?: string;
@@ -110,15 +110,20 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
           }))
           : undefined;
 
-      const botOrderTimeline: OrderTimelineData | undefined = data.orderTimeline
+      const botOrderSummary: OrderSummaryData | undefined = data.orderSummary
         ? {
-          orderNumber: data.orderTimeline.orderNumber,
-          steps: data.orderTimeline.steps.map((s: any) => ({
-            title: s.title,
-            timestamp: s.timestamp || s.timestampStr,
-            status: s.status,
-            icon: s.icon,
+          orderNumber: data.orderSummary.orderNumber,
+          status: data.orderSummary.status || 'processing',
+          customerName: data.orderSummary.customerName,
+          shippingAddress: data.orderSummary.shippingAddress,
+          items: (data.orderSummary.items || []).map((item: any) => ({
+            id: item.id || `item-${Math.random().toString(36).slice(2, 7)}`,
+            name: item.name,
+            quantity: Number(item.quantity) || 1,
+            price: Number(item.price) || 0,
           })),
+          totalAmount: Number(data.orderSummary.totalAmount) || 0,
+          orderDate: data.orderSummary.orderDate,
         }
         : undefined;
 
@@ -127,7 +132,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({
         sender: 'assistant',
         text: data.reply || 'Here is what I found for you.',
         products: botProducts && botProducts.length > 0 ? botProducts : undefined,
-        orderTimeline: botOrderTimeline,
+        orderSummary: botOrderSummary,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 

@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import {
   IStoreProvider,
-  OrderTimelineResult,
+  OrderSummaryResult,
   ProductItem,
   STORE_PROVIDER,
 } from './interfaces/store-provider.interface';
@@ -45,8 +45,8 @@ export class StoreController {
   async getOrder(
     @Param('orderNumber') orderNumber: string,
     @Query('tenantId') tenantId = 'demo-store-01',
-  ): Promise<{ order: OrderTimelineResult }> {
-    const order = await this.storeProvider.getOrderTimeline(
+  ): Promise<{ order: OrderSummaryResult }> {
+    const order = await this.storeProvider.getOrderSummary(
       tenantId,
       orderNumber,
     );

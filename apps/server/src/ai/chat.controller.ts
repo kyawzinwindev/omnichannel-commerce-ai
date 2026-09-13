@@ -33,7 +33,7 @@ export class ChatController {
           "Hello! I am your AI store assistant. I'm currently having trouble connecting to all catalog systems, but I'm here to assist you. How can I help today?",
         products: [],
         suggestedProducts: [],
-        orderTimeline: null,
+        orderSummary: null,
       };
     }
   }

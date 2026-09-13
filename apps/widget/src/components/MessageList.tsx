@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChatMessage, ProductData } from '../types/chat';
 import { ProductCard } from './ProductCard';
-import { OrderTimeline } from './OrderTimeline';
+import { OrderSummaryCard } from './OrderSummaryCard';
 
 export interface MessageListProps {
   messages: ChatMessage[];
@@ -23,7 +23,6 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, onAddToCart 
         behavior: 'smooth',
       });
     }
-
   }, [messages]);
 
   return (
@@ -71,10 +70,10 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, onAddToCart 
               </div>
             )}
 
-            {/* Embedded Order Timeline */}
-            {msg.orderTimeline && (
+            {/* Embedded Order Summary Card */}
+            {msg.orderSummary && (
               <div className="w-full pt-1">
-                <OrderTimeline order={msg.orderTimeline} />
+                <OrderSummaryCard order={msg.orderSummary} />
               </div>
             )}
 

@@ -5,7 +5,7 @@ import { IntentService, IntentType, IntentResult } from './intent.service';
 import { LlmService } from './llm.service';
 import {
   IStoreProvider,
-  OrderTimelineResult,
+  OrderSummaryResult,
   ProductItem,
   STORE_PROVIDER,
 } from '../store/interfaces/store-provider.interface';
@@ -30,7 +30,7 @@ export interface ChatResponse {
   reply: string;
   products?: ProductItem[];
   suggestedProducts?: ProductItem[];
-  orderTimeline?: OrderTimelineResult | null;
+  orderSummary?: OrderSummaryResult | null;
   metadata?: Record<string, any>;
 }
 
@@ -40,7 +40,7 @@ export interface StreamPayload {
   intent?: IntentType;
   confidence?: number;
   products?: ProductItem[];
-  orderTimeline?: OrderTimelineResult | null;
+  orderSummary?: OrderSummaryResult | null;
   content?: string;
   metadata?: Record<string, any>;
 }
@@ -93,7 +93,7 @@ export class ChatService {
   /**
    * Main conversational orchestrator:
    * 1. Parallel pre-execution (Intent recognition, initial vector context, and Redis history warming).
-   * 2. Retrieves store data (Products or Order Timeline) from active StoreProvider.
+   * 2. Retrieves store data (Products or Order Summary) from active StoreProvider.
    * 3. Synthesizes a response using LLM + LangChain RunnableWithMessageHistory.
    * 4. Enqueues background persistence to BullMQ queue without blocking response delivery.
    */
@@ -129,7 +129,7 @@ export class ChatService {
       );
 
       // 2. Prepare Context & Retrieve Data via StoreProvider
-      const { systemContext, products, orderTimeline, metadata } = await this.prepareContext(
+      const { systemContext, products, orderSummary, metadata } = await this.prepareContext(
         tenantId,
         userMessage,
         intentResult,
@@ -180,7 +180,7 @@ export class ChatService {
         reply,
         products,
         suggestedProducts: products,
-        orderTimeline,
+        orderSummary,
         metadata,
       };
     } catch (error) {
@@ -198,7 +198,7 @@ export class ChatService {
         reply: fallbackReply,
         products: [],
         suggestedProducts: [],
-        orderTimeline: null,
+        orderSummary: null,
         metadata: { fallback: true, error: error.message },
       };
     }
@@ -233,7 +233,7 @@ export class ChatService {
 
           const { intent, confidence } = intentResult;
 
-          const { systemContext, products, orderTimeline, metadata } =
+          const { systemContext, products, orderSummary, metadata } =
             await this.prepareContext(tenantId, userMessage, intentResult, initialVectorProducts);
 
           // Emit Metadata Event
@@ -244,7 +244,7 @@ export class ChatService {
               intent,
               confidence,
               products,
-              orderTimeline,
+              orderSummary,
               metadata,
             } as StreamPayload),
           });
@@ -340,7 +340,7 @@ export class ChatService {
   ): Promise<{
     systemContext: string;
     products?: ProductItem[];
-    orderTimeline?: OrderTimelineResult | null;
+    orderSummary?: OrderSummaryResult | null;
     metadata?: Record<string, any>;
   }> {
     const { intent, extracted_query } = intentResult;
@@ -416,27 +416,33 @@ INSTRUCTIONS:
 
       case IntentType.CHECK_ORDER: {
         const orderQuery = extracted_query || this.extractOrderNumber(userMessage) || '10492';
-        const orderTimeline = await this.storeProvider.getOrderTimeline(tenantId, orderQuery);
+        const orderSummary = await this.storeProvider.getOrderSummary(tenantId, orderQuery);
 
         let systemContext = `You are an E-Commerce Order Support Assistant.
 The customer is inquiring about the status of an order.`;
 
-        if (orderTimeline) {
-          const stepsSummary = orderTimeline.steps
-            .map((s) => `- ${s.title} (${s.timestamp}): Status [${s.status}]`)
+        if (orderSummary) {
+          const itemsList = orderSummary.items
+            .map(
+              (item, idx) =>
+                `${idx + 1}. ${item.name} (Qty: ${item.quantity}) - $${(item.price * item.quantity).toFixed(2)}`,
+            )
             .join('\n');
 
-          systemContext += `\n\nORDER DETAILS FOR #${orderTimeline.orderNumber}:
-Overall Status: ${orderTimeline.status}
-Customer: ${orderTimeline.customerEmail || 'Verified Customer'}
-Total: $${orderTimeline.totalAmount || 0}
-Tracking Steps:
-${stepsSummary}
+          systemContext += `\n\nORDER SUMMARY DETAILS FOR #${orderSummary.orderNumber}:
+Status: ${orderSummary.status.toUpperCase()}
+Customer Name: ${orderSummary.customerName || 'Valued Customer'}
+Shipping Address: ${orderSummary.shippingAddress || 'N/A'}
+Order Date: ${orderSummary.orderDate || 'Recent'}
+Items:
+${itemsList}
+Total Amount: $${orderSummary.totalAmount.toFixed(2)}
 
 INSTRUCTIONS:
-1. Provide a reassuring and clear update on order #${orderTimeline.orderNumber}.
-2. Mention the current status step and estimated delivery time clearly.
-3. Keep the response concise and friendly.`;
+1. Provide a clear, professional summary update for order #${orderSummary.orderNumber}.
+2. State the order status (${orderSummary.status}), recipient name, shipping address, and purchased item details.
+3. Confirm the total amount ($${orderSummary.totalAmount.toFixed(2)}).
+4. Keep the response concise and friendly.`;
         } else {
           systemContext += `\n\nNo order record was found for ID "${orderQuery}".
 INSTRUCTIONS:
@@ -447,8 +453,8 @@ INSTRUCTIONS:
 
         return {
           systemContext,
-          orderTimeline,
-          metadata: { orderId: orderQuery, found: !!orderTimeline },
+          orderSummary,
+          metadata: { orderId: orderQuery, found: !!orderSummary },
         };
       }
 

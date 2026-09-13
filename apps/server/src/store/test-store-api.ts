@@ -5,7 +5,7 @@ import * as request from 'supertest';
 
 async function bootstrap() {
   console.log('\n======================================================');
-  console.log('  STORE PROVIDER, RAG & ORDER TIMELINE TEST RUNNER');
+  console.log('  STORE PROVIDER, RAG & ORDER SUMMARY TEST RUNNER');
   console.log('======================================================\n');
 
   const app: INestApplication = await NestFactory.create(AppModule, {
@@ -46,7 +46,8 @@ async function bootstrap() {
       .expect(200);
 
     console.log(`  ✓ Order: #${res2.body.order.orderNumber} (Status: ${res2.body.order.status})`);
-    console.log(`  ✓ Timeline Steps count: ${res2.body.order.steps.length}`);
+    console.log(`  ✓ Customer: ${res2.body.order.customerName}, Total: $${res2.body.order.totalAmount}`);
+    console.log(`  ✓ Items count: ${res2.body.order.items?.length || 0}`);
     console.log('  ✅ Test 2 Passed.\n');
 
     // -------------------------------------------------------------
@@ -70,7 +71,7 @@ async function bootstrap() {
     console.log('  ✅ Test 3 Passed.\n');
 
     // -------------------------------------------------------------
-    // TEST 4: POST /api/chat (Order Tracking + OrderTimeline)
+    // TEST 4: POST /api/chat (Order Tracking + OrderSummary)
     // -------------------------------------------------------------
     console.log('▶ [Test 4] Testing POST /api/chat for Order Tracking...');
     const res4 = await request(server)
@@ -83,9 +84,9 @@ async function bootstrap() {
 
     console.log(`  ✓ Intent: ${res4.body.intent}`);
     console.log(`  ✓ Reply: "${res4.body.reply.slice(0, 90)}..."`);
-    console.log(`  ✓ Order Timeline Attached: ${!!res4.body.orderTimeline}`);
-    if (res4.body.orderTimeline) {
-      console.log(`  ✓ Order #${res4.body.orderTimeline.orderNumber} with ${res4.body.orderTimeline.steps.length} steps`);
+    console.log(`  ✓ Order Summary Attached: ${!!res4.body.orderSummary}`);
+    if (res4.body.orderSummary) {
+      console.log(`  ✓ Order #${res4.body.orderSummary.orderNumber} (Status: ${res4.body.orderSummary.status}, Total: $${res4.body.orderSummary.totalAmount})`);
     }
     console.log('  ✅ Test 4 Passed.\n');
 

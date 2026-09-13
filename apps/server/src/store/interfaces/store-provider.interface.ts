@@ -10,24 +10,26 @@ export interface ProductItem {
   similarity?: number;
 }
 
-export interface OrderTimelineStepItem {
-  title: string;
-  timestamp: string;
-  status: 'completed' | 'current' | 'pending';
-  icon?: 'check' | 'truck' | 'home' | 'package';
+export interface OrderItem {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
 }
 
-export interface OrderTimelineResult {
+export interface OrderSummaryResult {
   orderNumber: string;
-  status: string;
-  customerEmail?: string | null;
-  totalAmount?: number;
-  steps: OrderTimelineStepItem[];
+  status: 'accepted' | 'rejected' | 'pending' | 'processing';
+  customerName?: string;
+  shippingAddress?: string;
+  items: OrderItem[];
+  totalAmount: number;
+  orderDate?: string;
 }
 
 export interface IStoreProvider {
   getProductList(tenantId: string, query?: string, limit?: number): Promise<ProductItem[]>;
-  getOrderTimeline(tenantId: string, orderNumber: string): Promise<OrderTimelineResult | null>;
+  getOrderSummary(tenantId: string, orderNumber: string): Promise<OrderSummaryResult | null>;
 }
 
 export const STORE_PROVIDER = Symbol('STORE_PROVIDER');

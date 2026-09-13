@@ -9,16 +9,21 @@ export interface ProductData {
   image?: string;
 }
 
-export interface OrderTimelineStep {
-  title: string;
-  timestamp: string;
-  status: 'completed' | 'current' | 'pending';
-  icon?: 'check' | 'truck' | 'home' | 'package';
+export interface OrderItem {
+  id: string;
+  name: string;
+  quantity: number;
+  price: number;
 }
 
-export interface OrderTimelineData {
+export interface OrderSummaryData {
   orderNumber: string;
-  steps: OrderTimelineStep[];
+  status: 'accepted' | 'rejected' | 'pending' | 'processing';
+  customerName?: string;
+  shippingAddress?: string;
+  items: OrderItem[];
+  totalAmount: number;
+  orderDate?: string;
 }
 
 export interface ChatMessage {
@@ -27,5 +32,5 @@ export interface ChatMessage {
   text: string;
   timestamp?: string;
   products?: ProductData[];
-  orderTimeline?: OrderTimelineData;
+  orderSummary?: OrderSummaryData;
 }
