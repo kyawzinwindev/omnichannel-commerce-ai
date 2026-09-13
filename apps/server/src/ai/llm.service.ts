@@ -21,7 +21,7 @@ export class LlmService {
     const geminiModelName =
       this.configService.get<string>('google.model') ||
       this.configService.get<string>('GEMINI_MODEL') ||
-      'gemini-2.5-flash';
+      'gemini-3.6-flash';
 
     const groqApiKey =
       this.configService.get<string>('groq.apiKey') ||
@@ -61,6 +61,9 @@ export class LlmService {
   }
 
   getModel(): Runnable {
+    this.logger.log(
+      `Current LLM Setup -> Primary: [Google: ${this.primaryModel.model}], Fallback: [Groq: ${this.fallbackModel.model}]`
+    );
     return this.modelWithFallback;
   }
 
