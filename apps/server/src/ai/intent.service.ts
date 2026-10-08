@@ -234,7 +234,7 @@ Expected JSON schema:
         draftStatus,
         input: userInput,
       });
-      const response = await this.llmService.getModel().invoke(formatted);
+      const response = await this.llmService.getIntentModel().invoke(formatted);
 
       const content =
         typeof response.content === 'string'

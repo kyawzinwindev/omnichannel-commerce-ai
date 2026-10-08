@@ -73,7 +73,7 @@ export class ChatService {
       ['human', '{input}'],
     ]);
 
-    const chain = prompt.pipe(this.llmService.getModel());
+    const chain = prompt.pipe(this.llmService.getResponseModel());
 
     return new RunnableWithMessageHistory({
       runnable: chain,
