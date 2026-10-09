@@ -100,6 +100,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
           stage: parsed.stage || ChatStage.IDLE,
           cart: parsed.cart || [],
           draftOrder: parsed.draftOrder || {},
+          isHumanMode: typeof parsed.isHumanMode === 'boolean' ? parsed.isHumanMode : undefined,
           lastUpdated: parsed.lastUpdated,
         };
       } catch (err) {

@@ -1,13 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import configuration from './config/configuration';
+import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
-import { QueueModule } from './modules/queue/queue.module';
-import { AiModule } from './ai/ai.module';
-import { StoreModule } from './store/store.module';
+import { ConversationsModule } from './conversations/conversations.module';
+import { ProductsModule } from './products/products.module';
+import { OrdersModule } from './orders/orders.module';
+import { ChatModule } from './chat/chat.module';
 import { TelegramModule } from './telegram/telegram.module';
-import { validateEnv } from './config/env.validation';
+import { AuthModule } from './auth/auth.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -18,10 +21,13 @@ import { validateEnv } from './config/env.validation';
     }),
     DatabaseModule,
     RedisModule,
-    QueueModule,
-    StoreModule,
-    AiModule,
+    ConversationsModule,
+    ProductsModule,
+    OrdersModule,
+    ChatModule,
     TelegramModule,
+    AuthModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

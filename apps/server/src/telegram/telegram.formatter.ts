@@ -1,6 +1,6 @@
-import { ChatResponse } from '../ai/chat.service';
+import { ChatResponse } from '../chat/chat.service';
 import { ChatStage, UserSessionState } from '../redis/session-state';
-import { OrderSummaryResult, ProductItem } from '../store/interfaces/store-provider.interface';
+import { OrderSummaryResult, ProductItem } from '../products/interfaces/store-provider.interface';
 
 export const CALLBACK_CONFIRM_ORDER = 'order:confirm';
 export const CALLBACK_CANCEL_ORDER = 'order:cancel';

@@ -3,7 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Context, Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
-import { ChatService } from '../ai/chat.service';
+import { ChatService } from '../chat/chat.service';
+import { ConversationsService } from '../conversations/conversations.service';
 import { RedisService } from '../redis/redis.service';
 import {
   buildTelegramReply,
@@ -31,6 +32,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
     private readonly redisService: RedisService,
+    private readonly conversations: ConversationsService,
   ) {
     const token = this.configService.get<string>('telegram.botToken', '');
     this.tenantId = this.configService.get<string>('telegram.tenantId', 'demo-store-01');
@@ -79,6 +81,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     await this.bot.handleUpdate(update);
   }
 
+  /** Sends a plain-text message to a customer's Telegram chat (used by admin human takeover). */
+  async sendMessage(chatId: string | number, text: string): Promise<void> {
+    await this.bot.telegram.sendMessage(chatId, text);
+  }
+
   isValidWebhookSecret(headerValue?: string): boolean {
     return !this.webhookSecret || headerValue === this.webhookSecret;
   }
@@ -102,9 +109,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       await ctx.editMessageReplyMarkup(undefined).catch(() => undefined);
 
       if (data === CALLBACK_CONFIRM_ORDER) {
-        await this.processAndReply(ctx, chatId, 'confirm');
+        await this.processAndReply(ctx, chatId, 'confirm', true);
       } else if (data === CALLBACK_CANCEL_ORDER) {
-        await this.processAndReply(ctx, chatId, 'cancel');
+        await this.processAndReply(ctx, chatId, 'cancel', true);
       }
     });
 
@@ -117,12 +124,32 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
    * chat.id is used as both the session userId and the conversationId,
    * so Redis state (IDLE / COLLECTING_USER_INFO / CONFIRMING_ORDER) is per Telegram chat.
    */
-  private async processAndReply(ctx: Context, chatId: number, text: string) {
+  private async processAndReply(
+    ctx: Context,
+    chatId: number,
+    text: string,
+    fromButton = false,
+  ) {
     const conversationId = String(chatId);
 
-    await ctx.sendChatAction('typing').catch(() => undefined);
-
     try {
+      await this.conversations.ensureConversation(this.tenantId, conversationId, {
+        customerName: this.getCustomerName(ctx),
+        username: ctx.from?.username,
+      });
+
+      // Human takeover: bypass the LLM entirely, store the message and notify the dashboard.
+      if (await this.conversations.isHumanMode(this.tenantId, conversationId)) {
+        if (!fromButton) {
+          await this.conversations.saveMessages(this.tenantId, conversationId, [
+            { senderType: 'USER', content: text },
+          ]);
+        }
+        return;
+      }
+
+      await ctx.sendChatAction('typing').catch(() => undefined);
+
       const response = await this.chatService.processMessage(this.tenantId, text, conversationId);
       const session = await this.redisService.getSessionState(this.tenantId, conversationId);
       const reply = buildTelegramReply(response, session);
@@ -136,5 +163,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         .replyWithHTML(escapeHtml('Sorry, something went wrong. Please try again in a moment.'))
         .catch(() => undefined);
     }
+  }
+
+  private getCustomerName(ctx: Context): string | undefined {
+    const from = ctx.from;
+    if (!from) return undefined;
+    return [from.first_name, from.last_name].filter(Boolean).join(' ') || from.username;
   }
 }

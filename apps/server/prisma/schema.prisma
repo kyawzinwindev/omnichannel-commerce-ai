@@ -12,7 +12,30 @@ datasource db {
 enum SenderType {
   USER
   ASSISTANT
+  AGENT
   SYSTEM
+}
+
+enum Role {
+  ADMIN
+  AGENT
+}
+
+enum Gender {
+  MEN
+  WOMEN
+  UNISEX
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(ADMIN)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
 }
 
 model Tenant {
@@ -32,6 +55,12 @@ model Conversation {
   id             String    @id @default(uuid())
   tenantId       String    @map("tenant_id")
   externalUserId String?   @map("external_user_id")
+  customerName   String?   @map("customer_name")
+  username       String?
+  isHumanMode    Boolean   @default(false) @map("is_human_mode")
+  unreadCount    Int       @default(0) @map("unread_count")
+  lastMessageAt  DateTime? @map("last_message_at")
+  lastMessagePreview String? @map("last_message_preview")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
   tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -39,6 +68,7 @@ model Conversation {
 
   @@index([tenantId])
   @@index([externalUserId])
+  @@index([lastMessageAt])
   @@map("conversations")
 }
 
@@ -62,8 +92,10 @@ model Product {
   name        String
   description String?
   price       Decimal                       @db.Decimal(10, 2)
-  category    String?
-  inStock     Boolean                       @default(true) @map("in_stock")
+  brand        String?
+  targetGender Gender?                       @map("target_gender")
+  categoryType String?                       @map("category_type")
+  stock        Int                           @default(0)
   image       String?
   attributes  Json?
   embedding   Unsupported("vector(384)")?
@@ -73,6 +105,7 @@ model Product {
   tenant      Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@index([brand])
   @@map("products")
 }
 
@@ -81,12 +114,16 @@ model Order {
   tenantId      String            @map("tenant_id")
   orderNumber   String            @map("order_number")
   customerEmail String?           @map("customer_email")
+  customerName  String?           @map("customer_name")
+  customerPhone String?           @map("customer_phone")
+  shippingAddress String?         @map("shipping_address")
   totalAmount   Decimal           @default(0.00) @db.Decimal(10, 2) @map("total_amount")
   status        String            @default("processing")
   createdAt     DateTime          @default(now()) @map("created_at")
   updatedAt     DateTime          @updatedAt @map("updated_at")
   tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   steps         OrderStatusStep[]
+  items         OrderItem[]
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId])
@@ -106,4 +143,17 @@ model OrderStatusStep {
 
   @@index([orderId])
   @@map("order_status_steps")
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String  @map("order_id")
+  productId String? @map("product_id")
+  name      String
+  quantity  Int     @default(1)
+  price     Decimal @db.Decimal(10, 2)
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_items")
 }

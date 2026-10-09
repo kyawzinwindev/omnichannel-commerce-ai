@@ -10,6 +10,10 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   if (!str('GROQ_API_KEY')) errors.push('GROQ_API_KEY is required');
   if (!str('TELEGRAM_BOT_TOKEN')) errors.push('TELEGRAM_BOT_TOKEN is required');
 
+  if (process.env.NODE_ENV === 'production' && !str('JWT_SECRET')) {
+    errors.push('JWT_SECRET is required in production');
+  }
+
   const usePolling = str('TELEGRAM_USE_POLLING').toLowerCase() === 'true';
   const webhookUrl = str('TELEGRAM_WEBHOOK_URL');
 

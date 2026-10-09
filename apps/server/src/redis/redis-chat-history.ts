@@ -79,7 +79,7 @@ export class RedisChatMessageHistory extends BaseListChatMessageHistory {
             const role =
               msg.senderType === 'USER'
                 ? 'user'
-                : msg.senderType === 'ASSISTANT'
+                : msg.senderType === 'ASSISTANT' || msg.senderType === 'AGENT'
                   ? 'assistant'
                   : 'system';
 

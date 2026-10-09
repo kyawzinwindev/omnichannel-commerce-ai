@@ -5,6 +5,10 @@ export default () => ({
   groq: {
     apiKey: process.env.GROQ_API_KEY || '',
   },
+  auth: {
+    jwtSecret: process.env.JWT_SECRET || 'dev-only-insecure-jwt-secret',
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '12h',
+  },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || '',

@@ -16,14 +16,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:db:push": "prisma db push",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "test:intent": "ts-node src/ai/test-intent.ts",
-    "test:vector": "ts-node src/ai/test-vector-search.ts",
-    "test:chat": "ts-node src/ai/test-chat.ts",
-    "test:memory": "ts-node scripts/test-chat-memory.ts",
-    "test:multilingual": "ts-node scripts/test-multilingual.ts",
-    "test:api": "ts-node src/ai/test-chat-api.ts",
-    "test:store": "ts-node src/store/test-store-api.ts",
-    "test:chat:benchmark": "ts-node test/benchmark-chat.ts"
+    "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -35,14 +28,15 @@
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.2.3",
     "@nestjs/core": "^10.0.0",
+    "@nestjs/jwt": "^12.0.2",
     "@nestjs/platform-express": "^10.0.0",
     "@prisma/client": "^5.22.0",
     "@xenova/transformers": "^2.17.2",
+    "bcryptjs": "^3.0.3",
     "bullmq": "^6.3.4",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "ioredis": "^5.4.1",
-    "pg": "^8.13.1",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "telegraf": "^4.16.3"
@@ -51,16 +45,10 @@
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@types/express": "^5.0.0",
-    "@types/ioredis": "^5.0.0",
     "@types/node": "^20.3.1",
-    "@types/pg": "^8.11.10",
-    "@types/supertest": "^7.2.1",
     "prisma": "^5.22.0",
     "source-map-support": "^0.5.21",
-    "supertest": "^7.2.2",
-    "ts-loader": "^9.4.3",
     "ts-node": "^10.9.1",
-    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.1.3"
   }
 }

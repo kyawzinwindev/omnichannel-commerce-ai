@@ -21,5 +21,7 @@ export interface UserSessionState {
   stage: ChatStage;
   cart: CartItem[];
   draftOrder: DraftOrder;
+  /** When true, the Telegram pipeline bypasses the LLM and a human admin replies. */
+  isHumanMode?: boolean;
   lastUpdated?: number;
 }
