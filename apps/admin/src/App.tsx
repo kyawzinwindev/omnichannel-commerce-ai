@@ -4,6 +4,7 @@ import Login from './Login';
 import Products from './Products';
 import Orders from './Orders';
 import Conversations from './Conversations';
+import { ToastProvider } from './ui';
 
 type View = 'conversations' | 'products' | 'orders';
 
@@ -33,6 +34,7 @@ export default function App() {
   if (!email) return <Login onSuccess={setEmail} />;
 
   return (
+    <ToastProvider>
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
@@ -78,5 +80,6 @@ export default function App() {
         </div>
       </main>
     </div>
+    </ToastProvider>
   );
 }

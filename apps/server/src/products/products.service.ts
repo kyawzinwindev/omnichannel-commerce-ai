@@ -1,6 +1,28 @@
-import { Injectable } from '@nestjs/common';
-import { Gender, Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Gender, Prisma, Product } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+
+export interface ProductInput {
+  name: string;
+  brand: string;
+  targetGender: Gender;
+  categoryType: string;
+  price: number;
+  stock: number;
+  description?: string;
+}
+
+const toDto = (p: Product) => ({
+  id: p.id,
+  name: p.name,
+  brand: p.brand,
+  targetGender: p.targetGender,
+  categoryType: p.categoryType,
+  price: Number(p.price),
+  description: p.description,
+  stock: p.stock,
+  inStock: p.stock > 0,
+});
 
 export interface ListProductsParams {
   tenantId: string;
@@ -15,6 +37,39 @@ export interface ListProductsParams {
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private async findOrFail(tenantId: string, id: string) {
+    const product = await this.prisma.product.findFirst({ where: { id, tenantId } });
+    if (!product) throw new NotFoundException(`Product ${id} not found`);
+    return product;
+  }
+
+  async create(tenantId: string, input: ProductInput) {
+    const product = await this.prisma.product.create({ data: { tenantId, ...input } });
+    return toDto(product);
+  }
+
+  async get(tenantId: string, id: string) {
+    return toDto(await this.findOrFail(tenantId, id));
+  }
+
+  async update(tenantId: string, id: string, input: Partial<ProductInput>) {
+    await this.findOrFail(tenantId, id);
+    const data = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined));
+    return toDto(await this.prisma.product.update({ where: { id }, data }));
+  }
+
+  /** Hard delete, refused while the product is referenced by existing order items. */
+  async remove(tenantId: string, id: string) {
+    await this.findOrFail(tenantId, id);
+    const refs = await this.prisma.orderItem.count({ where: { productId: id } });
+    if (refs > 0) {
+      throw new ConflictException(
+        `Product is referenced by ${refs} order item(s) and cannot be deleted. Set its stock to 0 instead.`,
+      );
+    }
+    await this.prisma.product.delete({ where: { id } });
+  }
 
   /** Paginated catalog listing with brand / gender / type filters (admin dashboard). */
   async list(params: ListProductsParams) {
@@ -49,17 +104,7 @@ export class ProductsService {
     ]);
 
     return {
-      data: rows.map((p) => ({
-        id: p.id,
-        name: p.name,
-        brand: p.brand,
-        targetGender: p.targetGender,
-        categoryType: p.categoryType,
-        price: Number(p.price),
-        description: p.description,
-        stock: p.stock,
-        inStock: p.stock > 0,
-      })),
+      data: rows.map(toDto),
       meta: {
         page,
         pageSize,

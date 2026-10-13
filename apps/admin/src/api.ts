@@ -15,6 +15,20 @@ export interface Product {
   inStock: boolean;
 }
 
+export type Gender = 'MEN' | 'WOMEN' | 'UNISEX';
+
+export interface ProductInput {
+  name: string;
+  brand: string;
+  targetGender: Gender;
+  categoryType: string;
+  price: number;
+  stock: number;
+  description?: string;
+}
+
+export type OrderStatus = 'pending' | 'accepted' | 'rejected' | 'processing' | 'delivered';
+
 export interface ProductsResponse {
   data: Product[];
   meta: PageMeta;
@@ -123,8 +137,17 @@ export const api = {
     }),
   products: (p: { page: number; pageSize: number; brand?: string; gender?: string; categoryType?: string; search?: string }) =>
     request<ProductsResponse>(`/api/v1/admin/products?${qs(p)}`),
-  orders: (p: { page: number; pageSize: number; status?: string; search?: string }) =>
+  orders: (p: { page: number; pageSize: number; status?: string; search?: string; from?: string; to?: string }) =>
     request<{ data: Order[]; meta: PageMeta }>(`/api/v1/admin/orders?${qs(p)}`),
+  createProduct: (body: ProductInput) =>
+    request<{ data: Product }>('/api/v1/admin/products', { method: 'POST', body: JSON.stringify(body) }),
+  updateProduct: (id: string, body: Partial<ProductInput>) =>
+    request<{ data: Product }>(`/api/v1/admin/products/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteProduct: (id: string) => request<void>(`/api/v1/admin/products/${id}`, { method: 'DELETE' }),
+  order: (id: string) => request<{ data: Order }>(`/api/v1/admin/orders/${id}`),
+  updateOrderStatus: (id: string, status: OrderStatus) =>
+    request<{ data: Order }>(`/api/v1/admin/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  deleteOrder: (id: string) => request<void>(`/api/v1/admin/orders/${id}`, { method: 'DELETE' }),
   conversations: () => request<{ data: Conversation[] }>('/api/v1/admin/conversations'),
   messages: (chatId: string) => request<{ data: ChatMessage[] }>(`/api/v1/admin/conversations/${chatId}/messages`),
   markRead: (chatId: string) => request<void>(`/api/v1/admin/conversations/${chatId}/read`, { method: 'POST' }),

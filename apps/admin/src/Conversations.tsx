@@ -28,14 +28,36 @@ export default function Conversations() {
   const [toggling, setToggling] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
   const selectedRef = useRef<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef<boolean>(true);
+  const didInitialScrollRef = useRef<boolean>(false);
+  const prevLastMsgIdRef = useRef<string | null>(null);
 
   const selected = convos.find((c) => c.id === selectedId) ?? null;
 
   useEffect(() => {
     selectedRef.current = selectedId;
   }, [selectedId]);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+    setShowScrollBottom(false);
+    isAtBottomRef.current = true;
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const isAtBottom = distanceFromBottom < 80;
+    isAtBottomRef.current = isAtBottom;
+    setShowScrollBottom(!isAtBottom);
+  }, []);
 
   const handleLive = useCallback((event: LiveEvent) => {
     if (event.type === 'message') {
@@ -56,18 +78,55 @@ export default function Conversations() {
     return openLiveStream(handleLive, setConnected);
   }, [handleLive]);
 
+  // Reset initial scroll tracking when switching conversation
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, selectedId]);
+    didInitialScrollRef.current = false;
+    prevLastMsgIdRef.current = null;
+    setShowScrollBottom(false);
+    isAtBottomRef.current = true;
+  }, [selectedId]);
+
+  // Dedicated scroll control: only fires once upon initial message load,
+  // or smoothly down if a brand-new message is appended and user was already at bottom.
+  useEffect(() => {
+    if (!selectedId || messages.length === 0) return;
+
+    const lastMsgId = messages[messages.length - 1]?.id ?? null;
+
+    if (!didInitialScrollRef.current) {
+      didInitialScrollRef.current = true;
+      prevLastMsgIdRef.current = lastMsgId;
+      setShowScrollBottom(false);
+      isAtBottomRef.current = true;
+      const el = messagesContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+      return;
+    }
+
+    const isNewMessage = lastMsgId !== null && lastMsgId !== prevLastMsgIdRef.current;
+    prevLastMsgIdRef.current = lastMsgId;
+
+    if (isNewMessage && isAtBottomRef.current) {
+      requestAnimationFrame(() => scrollToBottom('smooth'));
+    }
+  }, [messages, selectedId, scrollToBottom]);
 
   async function open(id: string) {
+    if (selectedId === id) return;
     setSelectedId(id);
     setMessages([]);
     setError('');
+    setShowScrollBottom(false);
+    isAtBottomRef.current = true;
+    didInitialScrollRef.current = false;
     setConvos((prev) => prev.map((c) => (c.id === id ? { ...c, unreadCount: 0 } : c)));
     try {
       const [m] = await Promise.all([api.messages(id), api.markRead(id)]);
-      if (selectedRef.current === id) setMessages(m.data);
+      if (selectedRef.current === id) {
+        setMessages(m.data);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load messages');
     }
@@ -97,6 +156,9 @@ export default function Conversations() {
       const { data } = await api.reply(selected.id, text);
       setMessages((prev) => upsertMessage(prev, data));
       setDraft('');
+      // Always scroll down on self-sent replies
+      isAtBottomRef.current = true;
+      requestAnimationFrame(() => scrollToBottom('smooth'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
@@ -160,16 +222,30 @@ export default function Conversations() {
               </div>
             </header>
 
-            <div className="messages">
-              {messages.map((m) => (
-                <div key={m.id} className={`msg ${m.senderType.toLowerCase()}`}>
-                  <div className="bubble">{m.content}</div>
-                  <div className="meta">
-                    {SENDER_LABEL[m.senderType]} · {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            <div className="messages-wrap">
+              <div ref={messagesContainerRef} className="messages" onScroll={handleScroll}>
+                {messages.map((m) => (
+                  <div key={m.id} className={`msg ${m.senderType.toLowerCase()}`}>
+                    <div className="bubble">{m.content}</div>
+                    <div className="meta">
+                      {SENDER_LABEL[m.senderType]} · {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
                   </div>
-                </div>
-              ))}
-              <div ref={bottomRef} />
+                ))}
+              </div>
+              {showScrollBottom && (
+                <button
+                  id="scroll-to-bottom"
+                  className="scroll-bottom-btn"
+                  onClick={() => scrollToBottom('smooth')}
+                  aria-label="Scroll to bottom"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                  <span>Scroll to bottom</span>
+                </button>
+              )}
             </div>
 
             {error && <div className="error-box" style={{ margin: '0 24px 12px' }}>{error}</div>}

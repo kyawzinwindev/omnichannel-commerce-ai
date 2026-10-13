@@ -3,6 +3,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -23,7 +24,15 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { OrdersService } from '../orders/orders.service';
 import { ProductsService } from '../products/products.service';
 import { TelegramService } from '../telegram/telegram.service';
-import { ListOrdersQueryDto, ListProductsQueryDto, ReplyDto, ToggleModeDto } from './dto/admin.dto';
+import {
+  CreateProductDto,
+  ListOrdersQueryDto,
+  ListProductsQueryDto,
+  ReplyDto,
+  ToggleModeDto,
+  UpdateOrderStatusDto,
+  UpdateProductDto,
+} from './dto/admin.dto';
 
 @Controller('api/v1/admin')
 @UseGuards(JwtAuthGuard)
@@ -46,9 +55,46 @@ export class AdminController {
     return this.products.list({ tenantId: this.tenantId, ...q });
   }
 
+  @Post('products')
+  async createProduct(@Body() dto: CreateProductDto) {
+    return { data: await this.products.create(this.tenantId, dto) };
+  }
+
+  @Get('products/:id')
+  async getProduct(@Param('id') id: string) {
+    return { data: await this.products.get(this.tenantId, id) };
+  }
+
+  @Patch('products/:id')
+  async updateProduct(@Param('id') id: string, @Body() dto: UpdateProductDto) {
+    return { data: await this.products.update(this.tenantId, id, dto) };
+  }
+
+  @Delete('products/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteProduct(@Param('id') id: string) {
+    await this.products.remove(this.tenantId, id);
+  }
+
   @Get('orders')
   listOrders(@Query() q: ListOrdersQueryDto) {
     return this.orders.list({ tenantId: this.tenantId, ...q });
+  }
+
+  @Get('orders/:id')
+  async getOrder(@Param('id') id: string) {
+    return { data: await this.orders.get(this.tenantId, id) };
+  }
+
+  @Patch('orders/:id/status')
+  async updateOrderStatus(@Param('id') id: string, @Body() dto: UpdateOrderStatusDto) {
+    return { data: await this.orders.updateStatus(this.tenantId, id, dto.status) };
+  }
+
+  @Delete('orders/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteOrder(@Param('id') id: string) {
+    await this.orders.remove(this.tenantId, id);
   }
 
   @Get('conversations')
