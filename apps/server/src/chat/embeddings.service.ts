@@ -54,16 +54,5 @@ export class EmbeddingsService implements OnModuleInit {
 
     return Array.from(output.data);
   }
-
-  /**
-   * Batch embedding generation
-   */
-  async generateBatchEmbeddings(texts: string[]): Promise<number[][]> {
-    const results: number[][] = [];
-    for (const text of texts) {
-      results.push(await this.generateEmbedding(text));
-    }
-    return results;
-  }
 }
 

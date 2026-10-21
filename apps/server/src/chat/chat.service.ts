@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, MessageEvent } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { IntentService, IntentType, IntentResult } from './intent.service';
@@ -13,18 +13,11 @@ import { PrismaService } from '../database/prisma.service';
 import { OrdersService } from '../orders/orders.service';
 import { RedisService } from '../redis/redis.service';
 import { RedisChatMessageHistory } from '../redis/redis-chat-history';
-import { VectorSearchService, ScoredProduct } from './vector-search.service';
 import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
-import { Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 import { ChatStage, UserSessionState } from '../redis/session-state';
 import { buildStageAwareSystemPrompt } from './chat-response.prompt';
-
-export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
 
 export interface ChatResponse {
   conversationId: string;
@@ -34,17 +27,6 @@ export interface ChatResponse {
   products?: ProductItem[];
   suggestedProducts?: ProductItem[];
   orderSummary?: OrderSummaryResult | null;
-  metadata?: Record<string, any>;
-}
-
-export interface StreamPayload {
-  type: 'meta' | 'chunk' | 'done' | 'error';
-  conversationId?: string;
-  intent?: IntentType;
-  confidence?: number;
-  products?: ProductItem[];
-  orderSummary?: OrderSummaryResult | null;
-  content?: string;
   metadata?: Record<string, any>;
 }
 
@@ -60,7 +42,6 @@ export class ChatService {
     private readonly prisma: PrismaService,
     private readonly ordersService: OrdersService,
     private readonly redisService: RedisService,
-    private readonly vectorSearchService: VectorSearchService,
     @InjectQueue('chat-persistence')
     private readonly chatPersistenceQueue: Queue,
   ) {}
@@ -200,134 +181,6 @@ export class ChatService {
         metadata: { fallback: true, error: error.message },
       };
     }
-  }
-
-  /**
-   * Real-time SSE Token Streaming Orchestrator with Redis Session Flow
-   */
-  streamMessage(
-    tenantId: string,
-    userMessage: string,
-    conversationId?: string,
-  ): Observable<MessageEvent> {
-    const activeConversationId = conversationId || randomUUID();
-
-    return new Observable<MessageEvent>((subscriber) => {
-      (async () => {
-        try {
-          // 1. Fetch existing session state from Redis
-          let session = await this.redisService.getSessionState(tenantId, activeConversationId);
-
-          // 2. Classify intent with stage awareness
-          const intentResult = await this.intentService.classifyIntent(
-            userMessage,
-            session.stage,
-            session.draftOrder,
-          );
-
-          // 3. Process State Machine & Store Data
-          const { systemContext, products, orderSummary, updatedSession, metadata } =
-            await this.handleSessionAndContext(
-              tenantId,
-              userMessage,
-              intentResult,
-              session,
-              activeConversationId,
-            );
-
-          session = updatedSession;
-
-          // 4. Emit Metadata Event
-          subscriber.next({
-            data: JSON.stringify({
-              type: 'meta',
-              conversationId: activeConversationId,
-              intent: intentResult.intent,
-              confidence: intentResult.confidence,
-              products,
-              orderSummary,
-              metadata: { ...metadata, stage: session.stage },
-            } as StreamPayload),
-          });
-
-          // 5. Stream LLM tokens via RunnableWithMessageHistory
-          const runnableChain = this.createHistoryRunnable();
-          const sessionId = `${tenantId}:${activeConversationId}`;
-
-          const stream = await runnableChain.stream(
-            {
-              systemContext,
-              input: userMessage,
-            },
-            {
-              configurable: { sessionId },
-            },
-          );
-
-          let fullReply = '';
-
-          for await (const chunk of stream) {
-            const token =
-              typeof chunk.content === 'string'
-                ? chunk.content
-                : JSON.stringify(chunk.content);
-
-            if (token) {
-              fullReply += token;
-              subscriber.next({
-                data: JSON.stringify({
-                  type: 'chunk',
-                  content: token,
-                } as StreamPayload),
-              });
-            }
-          }
-
-          // 6. Decouple DB persistence: dispatch background job to BullMQ queue immediately
-          this.chatPersistenceQueue
-            .add('save-history', {
-              tenantId,
-              conversationId: activeConversationId,
-              userMessage,
-              aiResponse: fullReply,
-              metadata: { ...metadata, stage: session.stage },
-            })
-            .then((job) => {
-              this.logger.log(
-                `Enqueued background DB persistence job [${job.id}] for streamed conv [${activeConversationId}]`,
-              );
-            })
-            .catch((err) => {
-              this.logger.warn(`Failed to enqueue stream chat persistence job to BullMQ: ${err.message}`);
-            });
-
-          // 7. Emit Done Event
-          subscriber.next({
-            data: JSON.stringify({
-              type: 'done',
-              conversationId: activeConversationId,
-            } as StreamPayload),
-          });
-          subscriber.complete();
-        } catch (error) {
-          this.logger.warn(`Error during streamMessage: ${error.message}`);
-          subscriber.next({
-            data: JSON.stringify({
-              type: 'chunk',
-              content:
-                "I apologize, but I encountered a temporary issue while streaming the response. Please try asking again!",
-            } as StreamPayload),
-          });
-          subscriber.next({
-            data: JSON.stringify({
-              type: 'done',
-              conversationId: activeConversationId,
-            } as StreamPayload),
-          });
-          subscriber.complete();
-        }
-      })();
-    });
   }
 
   /**

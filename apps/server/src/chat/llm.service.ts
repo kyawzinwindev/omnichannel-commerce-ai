@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatGroq } from '@langchain/groq';
-import { BaseMessage, HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 
 export const GROQ_INTENT_MODEL = 'openai/gpt-oss-20b';
 export const GROQ_RESPONSE_MODEL = 'openai/gpt-oss-120b';
@@ -48,30 +47,5 @@ export class LlmService {
 
   getResponseModel(): ChatGroq {
     return this.responseModel;
-  }
-
-  async generateResponse(
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[],
-  ): Promise<string> {
-    const formattedMessages: BaseMessage[] = messages.map((msg) => {
-      switch (msg.role) {
-        case 'system':
-          return new SystemMessage(msg.content);
-        case 'user':
-          return new HumanMessage(msg.content);
-        case 'assistant':
-          return new AIMessage(msg.content);
-      }
-    });
-
-    try {
-      const response = await this.responseModel.invoke(formattedMessages);
-      return typeof response.content === 'string'
-        ? response.content
-        : JSON.stringify(response.content);
-    } catch (error) {
-      this.logger.error(`Groq LLM invocation failed: ${error.message}`);
-      throw error;
-    }
   }
 }

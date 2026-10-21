@@ -47,7 +47,7 @@ export class VectorSearchService {
   /**
    * Executes cosine similarity search with a raw vector embedding.
    */
-  async searchByVector(
+  private async searchByVector(
     tenantId: string,
     queryVector: number[],
     limit = 5,

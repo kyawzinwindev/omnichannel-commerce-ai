@@ -1,7 +1,6 @@
-import { Body, Controller, HttpCode, HttpStatus, MessageEvent, Post, Sse, Logger } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post, Logger } from '@nestjs/common';
 import { ChatService, ChatResponse } from './chat.service';
 import { ChatRequestDto } from './dto/chat-request.dto';
-import { Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 
 @Controller('api')
@@ -38,20 +37,6 @@ export class ChatController {
     }
   }
 
-  /**
-   * Server-Sent Events (SSE) streaming endpoint for real-time token generation
-   * POST /api/chat/stream
-   */
-  @Post('chat/stream')
-  @Sse()
-  streamChat(@Body() dto: ChatRequestDto): Observable<MessageEvent> {
-    return this.chatService.streamMessage(
-      dto.tenantId,
-      dto.message,
-      dto.conversationId,
-    );
-  }
-
   // Backward compatibility alias for /api/v1/chat
   @Post('v1/chat')
   @HttpCode(HttpStatus.OK)
@@ -59,9 +44,4 @@ export class ChatController {
     return await this.handleChat(dto);
   }
 
-  @Post('v1/chat/stream')
-  @Sse()
-  streamChatV1(@Body() dto: ChatRequestDto): Observable<MessageEvent> {
-    return this.streamChat(dto);
-  }
 }

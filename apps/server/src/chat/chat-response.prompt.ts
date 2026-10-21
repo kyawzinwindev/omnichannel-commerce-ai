@@ -8,7 +8,6 @@ export interface PromptContextParams {
   products?: ProductItem[];
   orderSummary?: OrderSummaryResult | null;
   searchQuery?: string | null;
-  language?: string;
 }
 
 export function buildStageAwareSystemPrompt(params: PromptContextParams): string {
@@ -103,7 +102,7 @@ INSTRUCTIONS:
         const productList = products
           .map(
             (p, idx) =>
-              `${idx + 1}. Product: "${p.name}" (ID: ${p.id})\n   Price: $${p.price}\n   Stock: ${p.inStock ? 'In Stock' : 'Out of Stock'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
+              `${idx + 1}. Product: "${p.name}"\n   Price: $${p.price}\n   Stock: ${p.inStock ? 'In Stock' : 'Out of Stock'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
           )
           .join('\n\n');
 
