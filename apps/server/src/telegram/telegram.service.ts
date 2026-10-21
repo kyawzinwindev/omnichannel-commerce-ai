@@ -5,18 +5,11 @@ import { message } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { ChatService } from '../chat/chat.service';
 import { ConversationsService } from '../conversations/conversations.service';
-import { RedisService } from '../redis/redis.service';
-import {
-  buildTelegramReply,
-  CALLBACK_CANCEL_ORDER,
-  CALLBACK_CONFIRM_ORDER,
-  escapeHtml,
-} from './telegram.formatter';
 
 const WELCOME_MESSAGE =
-  '👋 <b>Welcome!</b> I\'m your AI shopping assistant.\n\n' +
+  "👋 Welcome! I'm your AI shopping assistant.\n\n" +
   'Ask me about products, place an order, or track an existing one.\n' +
-  'Try: <i>"What do you sell?"</i> or <i>"Where is order 10492?"</i>\n\n' +
+  'Try: "What do you sell?" or "Where is order 10492?"\n\n' +
   'Send /cancel at any time to reset your order.';
 
 @Injectable()
@@ -31,7 +24,6 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly chatService: ChatService,
-    private readonly redisService: RedisService,
     private readonly conversations: ConversationsService,
   ) {
     const token = this.configService.get<string>('telegram.botToken', '');
@@ -91,29 +83,13 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   }
 
   private registerHandlers() {
-    this.bot.start((ctx) => ctx.replyWithHTML(WELCOME_MESSAGE));
+    this.bot.start((ctx) => ctx.reply(WELCOME_MESSAGE));
 
     this.bot.command('cancel', (ctx) => this.processAndReply(ctx, ctx.chat.id, 'cancel'));
 
     this.bot.on(message('text'), (ctx) =>
       this.processAndReply(ctx, ctx.chat.id, ctx.message.text),
     );
-
-    this.bot.on('callback_query', async (ctx) => {
-      const data = 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
-      const chatId = ctx.chat?.id;
-      await ctx.answerCbQuery().catch(() => undefined);
-      if (!chatId) return;
-
-      // Remove the buttons so an order can't be confirmed twice.
-      await ctx.editMessageReplyMarkup(undefined).catch(() => undefined);
-
-      if (data === CALLBACK_CONFIRM_ORDER) {
-        await this.processAndReply(ctx, chatId, 'confirm', true);
-      } else if (data === CALLBACK_CANCEL_ORDER) {
-        await this.processAndReply(ctx, chatId, 'cancel', true);
-      }
-    });
 
     this.bot.catch((err, ctx) => {
       this.logger.error(`Telegram handler error for update ${ctx.update.update_id}: ${err}`);
@@ -124,12 +100,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
    * chat.id is used as both the session userId and the conversationId,
    * so Redis state (IDLE / COLLECTING_USER_INFO / CONFIRMING_ORDER) is per Telegram chat.
    */
-  private async processAndReply(
-    ctx: Context,
-    chatId: number,
-    text: string,
-    fromButton = false,
-  ) {
+  private async processAndReply(ctx: Context, chatId: number, text: string) {
     const conversationId = String(chatId);
 
     try {
@@ -140,27 +111,26 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
       // Human takeover: bypass the LLM entirely, store the message and notify the dashboard.
       if (await this.conversations.isHumanMode(this.tenantId, conversationId)) {
-        if (!fromButton) {
-          await this.conversations.saveMessages(this.tenantId, conversationId, [
-            { senderType: 'USER', content: text },
-          ]);
-        }
+        await this.conversations.saveMessages(this.tenantId, conversationId, [
+          { senderType: 'USER', content: text },
+        ]);
         return;
       }
 
       await ctx.sendChatAction('typing').catch(() => undefined);
 
-      const response = await this.chatService.processMessage(this.tenantId, text, conversationId);
-      const session = await this.redisService.getSessionState(this.tenantId, conversationId);
-      const reply = buildTelegramReply(response, session);
+      // ChatService is the single source of truth for the message body.
+      const { reply: replyText } = await this.chatService.processMessage(
+        this.tenantId,
+        text,
+        conversationId,
+      );
 
-      await ctx.replyWithHTML(reply.text, {
-        reply_markup: reply.keyboard ? { inline_keyboard: reply.keyboard } : undefined,
-      });
+      await ctx.reply(replyText);
     } catch (err) {
       this.logger.error(`Failed to handle Telegram message from chat ${chatId}: ${err.message}`);
       await ctx
-        .replyWithHTML(escapeHtml('Sorry, something went wrong. Please try again in a moment.'))
+        .reply('Sorry, something went wrong. Please try again in a moment.')
         .catch(() => undefined);
     }
   }

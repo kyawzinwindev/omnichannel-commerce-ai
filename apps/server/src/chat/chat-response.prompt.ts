@@ -21,6 +21,12 @@ export function buildStageAwareSystemPrompt(params: PromptContextParams): string
 - Thai (ภาษาไทย): Use natural, polite, and friendly Thai with proper polite particles (ค่ะ/ครับ).
 - Retain exact product names, IDs, numbers, and prices while speaking in the customer's preferred language.`;
 
+  const formatInstruction = `\n\nOUTPUT FORMAT (channel-agnostic, applies to Telegram, Viber and Messenger):
+- Reply with ONE single message in plain text. No HTML, no tables, no headings, no bold/italic markers (**, __, #).
+- For product lists use one line per item: "- Name - $Price (In Stock / Out of Stock)", with a blank line between sections.
+- Never repeat the same list or information twice in a reply.
+- When listing products, end with one short line telling the customer to reply with the product name and quantity to order.`;
+
   let prompt = `You are a helpful and efficient E-Commerce AI Assistant.
 Current Chat Stage: ${stage}`;
 
@@ -47,7 +53,7 @@ INSTRUCTIONS:
 2. Ask for the customer's final confirmation to place the order (e.g. "Reply 'Yes' to confirm and place your order, or let me know if you would like to edit anything.").
 3. Do NOT ask for name, phone, or address again as they are already provided.`;
 
-    prompt += languageInstruction;
+    prompt += formatInstruction + languageInstruction;
     return prompt;
   }
 
@@ -72,7 +78,7 @@ INSTRUCTIONS:
 2. Ask ONLY for the missing fields (${missing.join(', ')}).
 3. Keep the message extremely concise and clear. Do NOT generate long prose or unnecessary paragraphs.`;
 
-    prompt += languageInstruction;
+    prompt += formatInstruction + languageInstruction;
     return prompt;
   }
 
@@ -196,6 +202,6 @@ Respond politely, acknowledge their query, and let them know you can assist with
     }
   }
 
-  prompt += languageInstruction;
+  prompt += formatInstruction + languageInstruction;
   return prompt;
 }
