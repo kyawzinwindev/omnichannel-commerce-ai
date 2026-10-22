@@ -8,11 +8,68 @@ export interface PromptContextParams {
   products?: ProductItem[];
   orderSummary?: OrderSummaryResult | null;
   searchQuery?: string | null;
+  /** Last meaningful intent before this turn (what the bot was doing). */
+  lastAction?: string | null;
+  /** Product the customer was last exploring. */
+  lastViewedProduct?: { id?: string; name: string } | null;
+  /** Last assistant reply, truncated. */
+  lastBotMessage?: string | null;
+}
+
+function buildSteeringBlock(params: PromptContextParams): string {
+  const { session, lastAction, lastViewedProduct, lastBotMessage } = params;
+  const { stage, cart, draftOrder } = session;
+  const product = lastViewedProduct?.name || cart[cart.length - 1]?.name || null;
+
+  const context = [
+    `- Current stage: ${stage}`,
+    `- Last action: ${lastAction || 'none'}`,
+    `- Product being explored: ${product || 'none'}`,
+    lastBotMessage ? `- Your previous message: "${lastBotMessage}"` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  let stageRule: string;
+  if (stage === ChatStage.CONFIRMING_ORDER) {
+    stageRule = `Order confirmation is pending. After your short acknowledgement, ask whether they want to proceed with the order confirmation or make changes.`;
+  } else if (stage === ChatStage.COLLECTING_USER_INFO) {
+    const missing: string[] = [];
+    if (!draftOrder.name) missing.push('Full Name');
+    if (!draftOrder.phone) missing.push('Phone Number');
+    if (!draftOrder.address) missing.push('Shipping Address');
+    stageRule = `Checkout details are incomplete. After your short acknowledgement, state clearly which specific field is still missing: ${missing.join(', ') || 'none'}.`;
+  } else if (lastAction === IntentType.ADD_TO_CART || (cart.length > 0 && !product)) {
+    stageRule = `The customer picked an item${product ? ` ("${product}")` : ''}. Keep it in mind, acknowledge their message, then ask how many they want (e.g. "ဒါနဲ့ ${product || '[Product Name]'} လေးကို အိတ်ထဲထည့်ဖို့ အရေအတွက် ဘယ်နှစ်ထည် ယူမလဲခင်ဗျာ (ဥပမာ- ၁ ထည်၊ ၂ ထည်)?").`;
+  } else if (
+    product &&
+    (lastAction === IntentType.QUERY_PRODUCT ||
+      lastAction === IntentType.GENERAL_CATALOG_QUERY ||
+      lastAction === IntentType.CHIT_CHAT ||
+      !lastAction)
+  ) {
+    stageRule = `The customer was browsing "${product}". Do NOT reset the product search. React warmly in one short phrase, then bridge back to that product (offer size, colour or more options), e.g. "ဟုတ်ပါတယ်ခင်ဗျာ။ စောစောက ကြည့်နေတဲ့ ${product} အတွက် အရွယ်အစား (Size) နဲ့ အရောင်လေးတွေ ထပ်ပြပေးရမလားခင်ဗျာ။"
+If the message is a totally empty fragment ("ဟိုလေ", "အင်း"), gently ask: "ဟုတ်ကဲ့ခင်ဗျာ၊ ဘယ်လိုအထည်မျိုးလေး စိတ်ဝင်စားပါသလဲ၊ ${product} ဒါမှမဟုတ် တခြား brand တွေထဲက ရှာပေးရမလားခင်ဗျာ။"`;
+  } else {
+    stageRule = `No active product context. React in one short phrase, then ask what kind of product they are interested in, or offer to show the catalog.`;
+  }
+
+  return `\n\nCONVERSATION STEERING (the customer sent a fragment, filler, banter or off-topic remark):
+${context}
+
+RULES:
+1. Acknowledge the customer's message or personality in ONE short, warm phrase. Never lecture or ignore it.
+2. ALWAYS end by re-anchoring to the current goal below. Never leave the customer without a next step.
+3. Do NOT reset, forget or restart the current context (stage, cart, product, draft order). Do NOT invent products.
+4. Keep it to 1-3 short sentences in natural, polite conversational tone (Burmese: ခင်ဗျာ/ရှင့် particles); never sound robotic.
+5. ${stageRule}`;
 }
 
 export function buildStageAwareSystemPrompt(params: PromptContextParams): string {
   const { intent, session, products, orderSummary, searchQuery } = params;
   const { stage, cart, draftOrder } = session;
+  const isDrift = intent === IntentType.CHIT_CHAT || intent === IntentType.UNKNOWN;
+  const steering = isDrift ? buildSteeringBlock(params) : '';
 
   const languageInstruction = `\n\nLANGUAGE & TONE GUIDELINES:
 - Detect the language of the customer's message and respond fluently in the matching language (Burmese, Thai, or English).
@@ -53,7 +110,7 @@ INSTRUCTIONS:
 2. Ask for the customer's final confirmation to place the order (e.g. "Reply 'Yes' to confirm and place your order, or let me know if you would like to edit anything.").
 3. Do NOT ask for name, phone, or address again as they are already provided.`;
 
-    prompt += formatInstruction + languageInstruction;
+    prompt += steering + formatInstruction + languageInstruction;
     return prompt;
   }
 
@@ -78,7 +135,7 @@ INSTRUCTIONS:
 2. Ask ONLY for the missing fields (${missing.join(', ')}).
 3. Keep the message extremely concise and clear. Do NOT generate long prose or unnecessary paragraphs.`;
 
-    prompt += formatInstruction + languageInstruction;
+    prompt += steering + formatInstruction + languageInstruction;
     return prompt;
   }
 
@@ -193,11 +250,13 @@ Respond warmly and introduce yourself as the AI store assistant. Ask how you can
       break;
     }
 
+    case IntentType.CHIT_CHAT:
     case IntentType.UNKNOWN:
     default: {
       prompt += `\n\nGENERAL QUERY:
 INSTRUCTIONS:
-Respond politely, acknowledge their query, and let them know you can assist with product search, cart orders, and order status updates.`;
+Respond politely, acknowledge their message, and let them know you can assist with product search, cart orders, and order status updates.`;
+      prompt += steering || buildSteeringBlock(params);
       break;
     }
   }

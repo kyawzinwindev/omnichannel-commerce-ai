@@ -134,6 +134,12 @@ export class ChatService {
           ? response.content
           : JSON.stringify(response.content);
 
+      // Remember what we just said so the next drifting message can be re-anchored
+      session.lastBotMessage = reply.slice(0, 300);
+      if (this.shouldPersistSession(session)) {
+        await this.redisService.setSessionState(tenantId, activeConversationId, session);
+      }
+
       // 5. Decouple DB persistence: dispatch background job to BullMQ queue immediately
       this.chatPersistenceQueue
         .add('save-history', {
@@ -203,11 +209,20 @@ export class ChatService {
     let products: ProductItem[] | undefined = undefined;
     let orderSummary: OrderSummaryResult | null | undefined = undefined;
 
+    // Context from BEFORE this turn (what the conversation was about)
+    const prevLastAction = session.lastAction ?? null;
+    const prevLastViewedProduct = session.lastViewedProduct ?? null;
+    const prevLastBotMessage = session.lastBotMessage ?? null;
+    const isDrift = intent === IntentType.CHIT_CHAT || intent === IntentType.UNKNOWN;
+
     // 1. Handle State Transitions based on Intent & Current Stage
     if (intent === IntentType.CANCEL_ORDER) {
       session.stage = ChatStage.IDLE;
       session.cart = [];
       session.draftOrder = {};
+      session.lastAction = undefined;
+      session.lastViewedProduct = undefined;
+      session.lastBotMessage = undefined;
       await this.redisService.clearSessionState(tenantId, conversationId);
     } else if (intent === IntentType.ADD_TO_CART) {
       const searchTarget = extracted_query || userMessage;
@@ -305,20 +320,36 @@ export class ChatService {
       };
     }
 
-    // Persist updated session state if not in cleared idle state
-    if (session.stage !== ChatStage.IDLE || session.cart.length > 0) {
-      await this.redisService.setSessionState(tenantId, conversationId, session);
-    }
-
-    // 2. Fetch Catalog / Order Data as needed
+    // Fetch Catalog / Order Data first so we can remember the viewed product
     if (intent === IntentType.GENERAL_CATALOG_QUERY) {
       products = await this.storeProvider.getProductList(tenantId, undefined, 4);
     } else if (intent === IntentType.QUERY_PRODUCT) {
       const searchQuery = extracted_query || userMessage;
       products = await this.storeProvider.getProductList(tenantId, searchQuery, 4);
+      if (products.length > 0) {
+        session.lastViewedProduct = { id: products[0].id, name: products[0].name };
+      }
     } else if (intent === IntentType.CHECK_ORDER) {
       const orderQuery = extracted_query || this.extractOrderNumber(userMessage) || '10492';
       orderSummary = await this.storeProvider.getOrderSummary(tenantId, orderQuery);
+    }
+
+    // Chit-chat / fragments never overwrite the conversational anchor
+    if (!isDrift && intent !== IntentType.CONFIRM_ORDER && intent !== IntentType.CANCEL_ORDER) {
+      session.lastAction = intent;
+    }
+    if (intent === IntentType.ADD_TO_CART && session.cart.length > 0) {
+      const last = session.cart[session.cart.length - 1];
+      session.lastViewedProduct = { id: last.productId, name: last.name };
+    }
+    if (session.stage === ChatStage.IDLE && session.cart.length === 0 && intent === IntentType.CONFIRM_ORDER) {
+      session.lastViewedProduct = undefined;
+      session.lastAction = undefined;
+    }
+
+    // Persist updated session state (skip when fully reset/empty)
+    if (this.shouldPersistSession(session)) {
+      await this.redisService.setSessionState(tenantId, conversationId, session);
     }
 
     // 3. Build Stage-Aware System Prompt
@@ -328,6 +359,9 @@ export class ChatService {
       products,
       orderSummary,
       searchQuery: extracted_query,
+      lastAction: prevLastAction,
+      lastViewedProduct: prevLastViewedProduct ?? session.lastViewedProduct ?? null,
+      lastBotMessage: prevLastBotMessage,
     });
 
     return {
@@ -337,6 +371,15 @@ export class ChatService {
       updatedSession: session,
       metadata: { intent, stage: session.stage },
     };
+  }
+
+  private shouldPersistSession(session: UserSessionState): boolean {
+    return (
+      session.stage !== ChatStage.IDLE ||
+      session.cart.length > 0 ||
+      !!session.lastViewedProduct ||
+      !!session.lastAction
+    );
   }
 
   private extractOrderNumber(text: string): string | null {

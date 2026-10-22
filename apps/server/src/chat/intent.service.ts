@@ -12,6 +12,7 @@ export enum IntentType {
   COLLECT_INFO = 'COLLECT_INFO',
   CONFIRM_ORDER = 'CONFIRM_ORDER',
   CANCEL_ORDER = 'CANCEL_ORDER',
+  CHIT_CHAT = 'CHIT_CHAT',
   UNKNOWN = 'UNKNOWN',
 }
 
@@ -55,15 +56,36 @@ export class IntentService {
       };
     }
 
-    // 2. CONFIRM_ORDER Fast Path (Prioritized in CONFIRMING_ORDER stage)
+    // 2. CONFIRM_ORDER Fast Path (only meaningful in CONFIRMING_ORDER stage)
     if (
-      /^(yes|confirm|proceed|place\s+order|looks\s+good|correct|agree|ok|okay|sure|yep|yup|ဟုတ်ကဲ့|အတည်ပြုပါ|ใช่|ยืนยัน)[\s!.,?]*$/i.test(
+      /^(yes|confirm|proceed|place\s+order|looks\s+good|correct|agree|ok|okay|sure|yep|yup|ဟုတ်ကဲ့|အတည်ပြုပါ|အိုကေ|ใช่|ยืนยัน)[\s!.,?]*$/i.test(
+        lower,
+      )
+    ) {
+      if (currentStage === ChatStage.CONFIRMING_ORDER) {
+        return {
+          intent: IntentType.CONFIRM_ORDER,
+          confidence: 0.99,
+          extracted_query: null,
+        };
+      }
+      // Outside confirmation, a bare "ok"/"yes" is just a filler: keep stage & context.
+      return {
+        intent: IntentType.CHIT_CHAT,
+        confidence: 0.8,
+        extracted_query: null,
+      };
+    }
+
+    // 2b. Fillers / fragmented thoughts -> CHIT_CHAT (never a hard reset)
+    if (
+      /^(အင်း+|အမ်း*|ဟင်း*|ဟိုလေ|ဟို|ဟိုဟာ|ဒီမှာလေ|ခဏ(?:\s*နော်)?|ခဏလေး|idk|i\s+don'?t\s+know|hm+|um+|uh+|erm|well|ah+|oh+|so|and|then|wait|hold\s+on|one\s+sec(?:ond)?|เอ่อ|อืม+|เดี๋ยว(?:ก่อน)?)[\s!.,?…]*$/i.test(
         lower,
       )
     ) {
       return {
-        intent: IntentType.CONFIRM_ORDER,
-        confidence: 0.99,
+        intent: IntentType.CHIT_CHAT,
+        confidence: 0.9,
         extracted_query: null,
       };
     }
@@ -206,15 +228,19 @@ Classify the customer's message into EXACTLY ONE of the following intents:
 6. COLLECT_INFO: When current stage is COLLECTING_USER_INFO (or customer is providing their name, phone number, or shipping address). Extract any detected entities into "extracted_info" (name, phone, address).
 7. CONFIRM_ORDER: Customer agrees, confirms, approves, or says 'Yes' to finalize the order (e.g., "yes", "confirm", "proceed", "looks good", "place order").
 8. CANCEL_ORDER: Customer wants to cancel, reset, or abort the order process.
-9. UNKNOWN: Out of scope or gibberish.
+9. CHIT_CHAT: Short fillers, fragments, incomplete thoughts, banter, weather talk or off-topic remarks (e.g. "အင်း", "ဟိုလေ", "ခဏနော်", "အိုကေ", "IDK", "မိုးရွာနေတယ်", "ဘာလုပ်နေလဲ").
+10. UNKNOWN: Out of scope or gibberish that is not conversational.
 
 CRITICAL INSTRUCTIONS:
 - Return ONLY valid, raw JSON. No markdown backticks or commentary outside JSON.
 - If intent is GENERAL_CATALOG_QUERY, "extracted_query" MUST be null.
+- Short words, fillers or incomplete sentences MUST be classified as CHIT_CHAT (or UNKNOWN), NEVER as CANCEL_ORDER, QUERY_PRODUCT or CONFIRM_ORDER. They are not a reset; the active stage is preserved.
+- Only choose CONFIRM_ORDER if the current stage is CONFIRMING_ORDER.
+- For CHIT_CHAT/UNKNOWN set "extracted_query" to null.
 
 Expected JSON schema:
 {{
-  "intent": "GREETING" | "GENERAL_CATALOG_QUERY" | "QUERY_PRODUCT" | "CHECK_ORDER" | "ADD_TO_CART" | "COLLECT_INFO" | "CONFIRM_ORDER" | "CANCEL_ORDER" | "UNKNOWN",
+  "intent": "GREETING" | "GENERAL_CATALOG_QUERY" | "QUERY_PRODUCT" | "CHECK_ORDER" | "ADD_TO_CART" | "COLLECT_INFO" | "CONFIRM_ORDER" | "CANCEL_ORDER" | "CHIT_CHAT" | "UNKNOWN",
   "confidence": 0.95,
   "extracted_query": "specific product name / order id / or null",
   "extracted_info": {{
