@@ -101,6 +101,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
           cart: parsed.cart || [],
           draftOrder: parsed.draftOrder || {},
           isHumanMode: typeof parsed.isHumanMode === 'boolean' ? parsed.isHumanMode : undefined,
+          lastAction: typeof parsed.lastAction === 'string' ? parsed.lastAction : undefined,
+          lastViewedProduct: parsed.lastViewedProduct?.name ? parsed.lastViewedProduct : undefined,
+          lastBotMessage:
+            typeof parsed.lastBotMessage === 'string' ? parsed.lastBotMessage : undefined,
           lastUpdated: parsed.lastUpdated,
         };
       } catch (err) {

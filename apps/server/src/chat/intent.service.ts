@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LlmService } from './llm.service';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { ChatStage, DraftOrder } from '../redis/session-state';
+import { ENGLISH_ONLY_INSTRUCTION } from './language-policy';
 
 export enum IntentType {
   GREETING = 'GREETING',
@@ -79,7 +80,7 @@ export class IntentService {
 
     // 2b. Fillers / fragmented thoughts -> CHIT_CHAT (never a hard reset)
     if (
-      /^(အင်း+|အမ်း*|ဟင်း*|ဟိုလေ|ဟို|ဟိုဟာ|ဒီမှာလေ|ခဏ(?:\s*နော်)?|ခဏလေး|idk|i\s+don'?t\s+know|hm+|um+|uh+|erm|well|ah+|oh+|so|and|then|wait|hold\s+on|one\s+sec(?:ond)?|เอ่อ|อืม+|เดี๋ยว(?:ก่อน)?)[\s!.,?…]*$/i.test(
+      /^(အင်း+|အမ်း*|ဟင်း*|ဟိုလေ|ဟို|ဟိုဟာ|ဒီမှာလေ|ခဏ(?:\s*နော်)?|ခဏလေး|idk|i\s+don'?t\s+know|hm+|um+|uh+|erm|well|ah+|oh+|so|and|then|wait|wait\s+a\s+(?:sec(?:ond)?|moment|minute|min)|hold\s+on|one\s+sec(?:ond)?|just\s+a\s+(?:sec(?:ond)?|moment)|lol|lmao|haha+|hehe+|hmm+|เอ่อ|อืม+|เดี๋ยว(?:ก่อน)?)[\s!.,?…]*$/i.test(
         lower,
       )
     ) {
@@ -233,6 +234,9 @@ Classify the customer's message into EXACTLY ONE of the following intents:
 
 CRITICAL INSTRUCTIONS:
 - Return ONLY valid, raw JSON. No markdown backticks or commentary outside JSON.
+- {englishOnly}
+- Understand English conversational fillers, slang and typos (e.g. "ummm", "idk", "lol", "u", "plz", "wanna", "jogers") and classify by meaning.
+- Statements about the weather, hunger, jokes or other off-topic banter are CHIT_CHAT, not product queries.
 - If intent is GENERAL_CATALOG_QUERY, "extracted_query" MUST be null.
 - Short words, fillers or incomplete sentences MUST be classified as CHIT_CHAT (or UNKNOWN), NEVER as CANCEL_ORDER, QUERY_PRODUCT or CONFIRM_ORDER. They are not a reset; the active stage is preserved.
 - Only choose CONFIRM_ORDER if the current stage is CONFIRMING_ORDER.
@@ -258,6 +262,7 @@ Expected JSON schema:
       const formatted = await prompt.formatMessages({
         currentStage,
         draftStatus,
+        englishOnly: ENGLISH_ONLY_INSTRUCTION,
         input: userInput,
       });
       const response = await this.llmService.getIntentModel().invoke(formatted);

@@ -2,6 +2,10 @@ import { ChatStage, UserSessionState } from '../redis/session-state';
 import { IntentType } from './intent.service';
 import { OrderSummaryResult, ProductItem } from '../products/interfaces/store-provider.interface';
 
+import { ENGLISH_ONLY_INSTRUCTION } from './language-policy';
+
+export { ENGLISH_ONLY_INSTRUCTION };
+
 export interface PromptContextParams {
   intent: IntentType;
   session: UserSessionState;
@@ -40,7 +44,7 @@ function buildSteeringBlock(params: PromptContextParams): string {
     if (!draftOrder.address) missing.push('Shipping Address');
     stageRule = `Checkout details are incomplete. After your short acknowledgement, state clearly which specific field is still missing: ${missing.join(', ') || 'none'}.`;
   } else if (lastAction === IntentType.ADD_TO_CART || (cart.length > 0 && !product)) {
-    stageRule = `The customer picked an item${product ? ` ("${product}")` : ''}. Keep it in mind, acknowledge their message, then ask how many they want (e.g. "ဒါနဲ့ ${product || '[Product Name]'} လေးကို အိတ်ထဲထည့်ဖို့ အရေအတွက် ဘယ်နှစ်ထည် ယူမလဲခင်ဗျာ (ဥပမာ- ၁ ထည်၊ ၂ ထည်)?").`;
+    stageRule = `The customer picked an item${product ? ` ("${product}")` : ''}. Keep it in mind, acknowledge their message, then ask how many they want (e.g. "By the way, how many ${product || '[Product Name]'} would you like to add to your cart (for example 1 or 2)?").`;
   } else if (
     product &&
     (lastAction === IntentType.QUERY_PRODUCT ||
@@ -48,8 +52,8 @@ function buildSteeringBlock(params: PromptContextParams): string {
       lastAction === IntentType.CHIT_CHAT ||
       !lastAction)
   ) {
-    stageRule = `The customer was browsing "${product}". Do NOT reset the product search. React warmly in one short phrase, then bridge back to that product (offer size, colour or more options), e.g. "ဟုတ်ပါတယ်ခင်ဗျာ။ စောစောက ကြည့်နေတဲ့ ${product} အတွက် အရွယ်အစား (Size) နဲ့ အရောင်လေးတွေ ထပ်ပြပေးရမလားခင်ဗျာ။"
-If the message is a totally empty fragment ("ဟိုလေ", "အင်း"), gently ask: "ဟုတ်ကဲ့ခင်ဗျာ၊ ဘယ်လိုအထည်မျိုးလေး စိတ်ဝင်စားပါသလဲ၊ ${product} ဒါမှမဟုတ် တခြား brand တွေထဲက ရှာပေးရမလားခင်ဗျာ။"`;
+    stageRule = `The customer was browsing "${product}". Do NOT reset the product search. React warmly in one short phrase, then bridge back to that product (offer sizes, colours or more options), e.g. "Of course! Would you like to see more sizes and colours for the ${product} you were looking at?"
+If the message is a totally empty fragment (e.g. "umm", "hmm"), gently ask: "Sure! What kind of apparel are you interested in? I can look for more ${product} options or other brands."`;
   } else {
     stageRule = `No active product context. React in one short phrase, then ask what kind of product they are interested in, or offer to show the catalog.`;
   }
@@ -61,7 +65,7 @@ RULES:
 1. Acknowledge the customer's message or personality in ONE short, warm phrase. Never lecture or ignore it.
 2. ALWAYS end by re-anchoring to the current goal below. Never leave the customer without a next step.
 3. Do NOT reset, forget or restart the current context (stage, cart, product, draft order). Do NOT invent products.
-4. Keep it to 1-3 short sentences in natural, polite conversational tone (Burmese: ခင်ဗျာ/ရှင့် particles); never sound robotic.
+4. Keep it to 1-3 short sentences in a natural, polite, conversational English tone; never sound robotic.
 5. ${stageRule}`;
 }
 
@@ -72,11 +76,9 @@ export function buildStageAwareSystemPrompt(params: PromptContextParams): string
   const steering = isDrift ? buildSteeringBlock(params) : '';
 
   const languageInstruction = `\n\nLANGUAGE & TONE GUIDELINES:
-- Detect the language of the customer's message and respond fluently in the matching language (Burmese, Thai, or English).
-- English: Natural, friendly, and concise.
-- Burmese (မြန်မာဘာသာ): Use natural, polite, and grammatically standard Burmese with polite particles (ခင်ဗျာ/ရှင့်).
-- Thai (ภาษาไทย): Use natural, polite, and friendly Thai with proper polite particles (ค่ะ/ครับ).
-- Retain exact product names, IDs, numbers, and prices while speaking in the customer's preferred language.`;
+- ${ENGLISH_ONLY_INSTRUCTION}
+- Tone: natural, friendly, and concise.
+- Retain exact product names, IDs, numbers, and prices.`;
 
   const formatInstruction = `\n\nOUTPUT FORMAT (channel-agnostic, applies to Telegram, Viber and Messenger):
 - Reply with ONE single message in plain text. No HTML, no tables, no headings, no bold/italic markers (**, __, #).

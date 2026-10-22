@@ -16,7 +16,17 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:db:push": "prisma db push",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "prisma:migrate:deploy": "prisma migrate deploy"
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "test": "jest"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.ts$": ["ts-jest", { "diagnostics": false }]
+    },
+    "testEnvironment": "node"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -44,10 +54,14 @@
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
+    "@nestjs/testing": "^10.4.22",
     "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.3.1",
+    "jest": "^30.5.2",
     "prisma": "^5.22.0",
     "source-map-support": "^0.5.21",
+    "ts-jest": "^29.4.15",
     "ts-node": "^10.9.1",
     "typescript": "^5.1.3"
   }
