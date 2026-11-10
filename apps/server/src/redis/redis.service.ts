@@ -26,10 +26,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  getClient(): Redis {
-    return this.client;
-  }
-
   async get(key: string): Promise<string | null> {
     try {
       return await this.client.get(key);

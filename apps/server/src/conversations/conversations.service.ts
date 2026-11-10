@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { Conversation, Message, SenderType } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -22,8 +22,6 @@ export interface NewMessage {
 
 @Injectable()
 export class ConversationsService {
-  private readonly logger = new Logger(ConversationsService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
