@@ -93,11 +93,14 @@ export class ChatService {
       let session = await this.redisService.getSessionState(tenantId, activeConversationId);
 
       // 2. Classify intent with stage awareness
-      const intentResult = await this.intentService.classifyIntent(
-        userMessage,
-        session.stage,
-        session.draftOrder,
-      );
+      const intentResult = await this.intentService.classifyIntent(userMessage, {
+        currentState: session.stage,
+        lastBotMessage: session.lastBotMessage,
+        cart: session.cart,
+        draftOrder: session.draftOrder,
+        lastViewedProduct: session.lastViewedProduct,
+        lastAction: session.lastAction,
+      });
 
       this.logger.log(
         `Detected Intent: ${intentResult.intent} (Confidence: ${(intentResult.confidence * 100).toFixed(1)}%, Stage: ${session.stage})`,

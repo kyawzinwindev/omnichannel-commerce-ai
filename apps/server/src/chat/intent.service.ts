@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LlmService } from './llm.service';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { ChatStage, DraftOrder } from '../redis/session-state';
+import { CartItem, ChatStage, DraftOrder } from '../redis/session-state';
 import { ENGLISH_ONLY_INSTRUCTION } from './language-policy';
 
 export enum IntentType {
@@ -27,262 +27,149 @@ export interface ExtractedInfo {
 export interface IntentResult {
   intent: IntentType;
   confidence: number;
+  /** Product name / order id extracted from `extractedEntities.product`. */
   extracted_query: string | null;
   extracted_info?: ExtractedInfo;
+  /** The model's step-by-step contextual evaluation (for logging / debugging). */
+  reasoning?: string;
 }
 
+/** Dialogue context handed to the classifier alongside the raw user message. */
+export interface IntentContext {
+  currentState: ChatStage;
+  lastBotMessage?: string | null;
+  cart?: CartItem[];
+  draftOrder?: DraftOrder;
+  lastViewedProduct?: { id?: string; name: string } | null;
+  lastAction?: string | null;
+}
+
+/**
+ * Purely LLM-driven intent classification (openai/gpt-oss-20b).
+ * There are NO keyword / regex fast-paths: every message is reasoned about against the
+ * active dialogue state, the last bot message and the pending checkout context.
+ */
 @Injectable()
 export class IntentService {
   private readonly logger = new Logger(IntentService.name);
 
   constructor(private readonly llmService: LlmService) {}
 
-  /**
-   * Fast rule-based heuristic classifier for high-frequency commerce patterns (< 1ms)
-   */
-  private matchFastRules(input: string, currentStage: ChatStage = ChatStage.IDLE): IntentResult | null {
-    const text = input.trim();
-    const lower = text.toLowerCase();
+  /** Describes what the bot is currently waiting on (cart, missing fields, product in view). */
+  private buildPendingContext(ctx: IntentContext): string {
+    const parts: string[] = [];
+    const cart = ctx.cart ?? [];
+    parts.push(
+      cart.length > 0
+        ? `Cart: ${cart.map((c) => `${c.quantity}x ${c.name}`).join(', ')}`
+        : 'Cart: empty',
+    );
 
-    // 1. CANCEL_ORDER Fast Path
-    if (
-      /^(cancel|cancel\s+order|stop|abort|reset|nevermind|clear|မလုပ်တော့ပါ|ဖျက်သိမ်း|ยกเลิก)[\s!.,?]*$/i.test(
-        lower,
-      )
-    ) {
-      return {
-        intent: IntentType.CANCEL_ORDER,
-        confidence: 0.99,
-        extracted_query: null,
-      };
+    const draft = ctx.draftOrder ?? {};
+    const missing = (['name', 'phone', 'address'] as const).filter((k) => !draft[k]);
+    parts.push(
+      `Customer details: name=${draft.name || 'MISSING'}, phone=${draft.phone || 'MISSING'}, address=${draft.address || 'MISSING'}`,
+    );
+    if (ctx.currentState === ChatStage.COLLECTING_USER_INFO) {
+      parts.push(`Missing checkout fields: ${missing.join(', ') || 'none'}`);
     }
-
-    // 2. CONFIRM_ORDER Fast Path (only meaningful in CONFIRMING_ORDER stage)
-    if (
-      /^(yes|confirm|proceed|place\s+order|looks\s+good|correct|agree|ok|okay|sure|yep|yup|ဟုတ်ကဲ့|အတည်ပြုပါ|အိုကေ|ใช่|ยืนยัน)[\s!.,?]*$/i.test(
-        lower,
-      )
-    ) {
-      if (currentStage === ChatStage.CONFIRMING_ORDER) {
-        return {
-          intent: IntentType.CONFIRM_ORDER,
-          confidence: 0.99,
-          extracted_query: null,
-        };
-      }
-      // Outside confirmation, a bare "ok"/"yes" is just a filler: keep stage & context.
-      return {
-        intent: IntentType.CHIT_CHAT,
-        confidence: 0.8,
-        extracted_query: null,
-      };
-    }
-
-    // 2b. Fillers / fragmented thoughts -> CHIT_CHAT (never a hard reset)
-    if (
-      /^(အင်း+|အမ်း*|ဟင်း*|ဟိုလေ|ဟို|ဟိုဟာ|ဒီမှာလေ|ခဏ(?:\s*နော်)?|ခဏလေး|idk|i\s+don'?t\s+know|hm+|um+|uh+|erm|well|ah+|oh+|so|and|then|wait|wait\s+a\s+(?:sec(?:ond)?|moment|minute|min)|hold\s+on|one\s+sec(?:ond)?|just\s+a\s+(?:sec(?:ond)?|moment)|lol|lmao|haha+|hehe+|hmm+|เอ่อ|อืม+|เดี๋ยว(?:ก่อน)?)[\s!.,?…]*$/i.test(
-        lower,
-      )
-    ) {
-      return {
-        intent: IntentType.CHIT_CHAT,
-        confidence: 0.9,
-        extracted_query: null,
-      };
-    }
-
-    // 3. GENERAL_CATALOG_QUERY Fast Path
-    const generalCatalogRegex =
-      /^(?:what\s+(?:products|items|things|goods)\s+do\s+you\s+(?:sell|have)|what\s+do\s+you\s+(?:sell|have)|show\s+(?:all\s+|me\s+)?(?:products|items|catalog)|list\s+(?:all\s+)?(?:products|items)|view\s+catalog|browse\s+(?:store|catalog)|what\'s\s+in\s+store|catalog)[?!.]*$/i;
-    if (generalCatalogRegex.test(lower)) {
-      return {
-        intent: IntentType.GENERAL_CATALOG_QUERY,
-        confidence: 0.99,
-        extracted_query: null,
-      };
-    }
-
-    // 4. GREETING Fast Path
-    const greetingRegex =
-      /^(hi|hello|hey|good\s+(morning|afternoon|evening|day)|howdy|greetings|mingalaba|မင်္ဂလာပါ|sawasdee|สวัสดี|thanks|thank\s+you|thx|ကျေးဇူး|ขอบคุณ)[\s!.,?]*$/i;
-    if (greetingRegex.test(lower) && currentStage === ChatStage.IDLE) {
-      return {
-        intent: IntentType.GREETING,
-        confidence: 0.99,
-        extracted_query: null,
-      };
-    }
-
-    // 5. CHECK_ORDER Fast Path
-    const orderMatch =
-      text.match(
-        /(?:where is|check|status of|track|find)?\s*(?:my\s+)?order\s*(?:#|number|id)?\s*([A-Za-z0-9_-]{4,15})/i,
-      ) || text.match(/#?([0-9]{4,8})/);
-    if (
-      /(order|tracking|shipment|delivery|parcel|package|status)/i.test(lower) &&
-      orderMatch &&
-      currentStage === ChatStage.IDLE
-    ) {
-      return {
-        intent: IntentType.CHECK_ORDER,
-        confidence: 0.98,
-        extracted_query: orderMatch[1] || orderMatch[0],
-      };
-    }
-
-    // 6. ADD_TO_CART Fast Path
-    const cartMatch =
-      text.match(
-        /(?:please\s+)?(?:add|put)\s+(?:the\s+|this\s+)?(.+?)\s+to\s+(?:my\s+)?(?:shopping\s+)?cart/i,
-      ) || text.match(/(?:please\s+)?(?:buy|purchase|checkout)\s+(?:the\s+|this\s+)?(.+)/i);
-    if (cartMatch && cartMatch[1]) {
-      return {
-        intent: IntentType.ADD_TO_CART,
-        confidence: 0.99,
-        extracted_query: cartMatch[1].trim(),
-      };
-    }
-
-    // 7. COLLECT_INFO Heuristics during COLLECTING_USER_INFO stage
-    if (currentStage === ChatStage.COLLECTING_USER_INFO) {
-      const phoneRegex = /(\+?[0-9\s-]{7,15})/;
-      const phoneMatch = text.match(phoneRegex);
-      const isLikelyInfo =
-        phoneMatch ||
-        /(name is|my name|i am|address|street|st|ave|rd|road|lane|city|state|zip|yangon|mandalay|bangkok|live at|deliver to)/i.test(
-          lower,
-        );
-
-      if (isLikelyInfo) {
-        return null; // Delegate to LLM for precise structured entity extraction
-      }
-    }
-
-    // 8. Specific Product Query Fast Path
-    const productQueryPatterns = [
-      /^(?:do you have|can you show me|show me|find|search for|looking for|recommend|what kind of)\s+(.+?)[?!.]*$/i,
-      /^(?:how much is|price of|what is the price of)\s+(.+?)[?!.]*$/i,
-      /^(?:is there any|any)\s+(.+?)[?!.]*$/i,
-    ];
-
-    for (const pattern of productQueryPatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        const query = match[1]
-          .replace(/\b(available|in stock|under \$\d+|in [a-zA-Z]+ size)\b/gi, '')
-          .trim();
-        return {
-          intent: IntentType.QUERY_PRODUCT,
-          confidence: 0.96,
-          extracted_query: query || match[1].trim(),
-        };
-      }
-    }
-
-    return null;
+    if (ctx.lastViewedProduct?.name) parts.push(`Product being viewed: ${ctx.lastViewedProduct.name}`);
+    if (ctx.lastAction) parts.push(`Last meaningful action: ${ctx.lastAction}`);
+    return parts.join('\n');
   }
 
   /**
-   * Classifies user input into one of the predefined commerce intent categories with stage awareness.
+   * Classifies the user message with the LLM, grounded in the active session state.
+   * On any failure resolves to UNKNOWN so the session state is preserved (never a destructive intent).
    */
-  async classifyIntent(
-    userInput: string,
-    currentStage: ChatStage = ChatStage.IDLE,
-    draftOrder?: DraftOrder,
-  ): Promise<IntentResult> {
+  async classifyIntent(userInput: string, context: IntentContext): Promise<IntentResult> {
     if (!userInput || !userInput.trim()) {
-      return {
-        intent: IntentType.UNKNOWN,
-        confidence: 1.0,
-        extracted_query: null,
-      };
+      return { intent: IntentType.UNKNOWN, confidence: 1.0, extracted_query: null };
     }
-
-    // 1. Fast-Path Rule Evaluation (< 1ms)
-    const fastResult = this.matchFastRules(userInput, currentStage);
-    if (fastResult) {
-      this.logger.debug(
-        `Fast-path intent matched: ${fastResult.intent} (Confidence: ${fastResult.confidence})`,
-      );
-      return fastResult;
-    }
-
-    // 2. Fallback to LLM Classification for contextual & entity-rich inputs
-    const draftStatus = draftOrder
-      ? `Name: ${draftOrder.name || 'MISSING'}, Phone: ${draftOrder.phone || 'MISSING'}, Address: ${draftOrder.address || 'MISSING'}`
-      : 'No draft order data';
 
     const prompt = ChatPromptTemplate.fromMessages([
       [
         'system',
-        `You are a high-precision Intent Classification Engine for an E-Commerce AI Assistant.
-Current Chat Stage: {currentStage}
-Current Draft Order Context: {draftStatus}
+        `You are the dialogue state reasoning engine for an e-commerce assistant.
+You must analyze the user's intent by interpreting their message in the context of currentState and lastBotMessage.
 
-Classify the customer's message into EXACTLY ONE of the following intents:
+currentState: {currentState}
+lastBotMessage: {lastBotMessage}
+pendingContext:
+{pendingContext}
 
-1. GREETING: Customer says hello, hi, good morning, thanks, or pleasantries.
-2. GENERAL_CATALOG_QUERY: Customer asks general questions about store inventory without a specific product name (e.g., "what products do you sell?", "show all items", "what do you have?"). You MUST set "extracted_query" to null for this intent to avoid false database queries!
-3. QUERY_PRODUCT: Customer is searching for, asking about, or inquiring about a specific product, item, brand, or feature. Extract the search term into "extracted_query".
-4. CHECK_ORDER: Customer is asking for order tracking or status of an existing order.
-5. ADD_TO_CART: Customer wants to add an item to their cart, buy, purchase, or order an item. Extract item name to "extracted_query", quantity into "extracted_info.quantity" if mentioned (default 1).
-6. COLLECT_INFO: When current stage is COLLECTING_USER_INFO (or customer is providing their name, phone number, or shipping address). Extract any detected entities into "extracted_info" (name, phone, address).
-7. CONFIRM_ORDER: Customer agrees, confirms, approves, or says 'Yes' to finalize the order (e.g., "yes", "confirm", "proceed", "looks good", "place order").
-8. CANCEL_ORDER: Customer wants to cancel, reset, or abort the order process.
-9. CHIT_CHAT: Short fillers, fragments, incomplete thoughts, banter, weather talk or off-topic remarks (e.g. "အင်း", "ဟိုလေ", "ခဏနော်", "အိုကေ", "IDK", "မိုးရွာနေတယ်", "ဘာလုပ်နေလဲ").
-10. UNKNOWN: Out of scope or gibberish that is not conversational.
+INTENTS (choose EXACTLY ONE):
+- GREETING: hello, hi, thanks or other pleasantries.
+- GENERAL_CATALOG_QUERY: broad question about what the store sells, with no specific product (extractedEntities.product MUST be null).
+- QUERY_PRODUCT: asking about a specific product, brand or feature (put the search term in extractedEntities.product).
+- CHECK_ORDER: asking for tracking/status of an existing order (put the order id in extractedEntities.product).
+- ADD_TO_CART: wants to buy / add an item (product in extractedEntities.product, quantity in extractedEntities.quantity, default 1).
+- COLLECT_INFO: providing name, phone number or delivery address.
+- CONFIRM_ORDER: agrees to finalize the pending order.
+- CANCEL_ORDER: wants to abort / cancel the order process.
+- CHIT_CHAT: banter, jokes, small talk, fragments or fillers with no bearing on the current dialogue.
+- UNKNOWN: out of scope or gibberish.
 
-CRITICAL INSTRUCTIONS:
-- Return ONLY valid, raw JSON. No markdown backticks or commentary outside JSON.
+CONTEXT EVALUATION RULES:
+1. CONFIRMING_ORDER context:
+   - Any agreement, approval or positive affirmation ("yes", "okay", "sure", "go ahead", "proceed", "looks fine") means the user agrees to finalize -> CONFIRM_ORDER.
+   - Any rejection or stopping phrase ("no", "cancel", "don't", "wait stop") means abort -> CANCEL_ORDER.
+   - Do NOT treat affirmations as casual chit-chat when an order confirmation prompt is active.
+2. COLLECTING_USER_INFO context:
+   - If the user provides information intended to fulfil the missing checkout requirements (names, phone numbers, delivery addresses) -> COLLECT_INFO, and fill the matching extractedEntities fields.
+3. Disruption / off-topic in active states (CONFIRMING_ORDER, COLLECTING_USER_INFO, or product browsing):
+   - If the user asks something completely unrelated, banters, tells a joke, or sends fragmented fillers -> CHIT_CHAT or UNKNOWN.
+   - Preserve the active state so the response generator can steer the conversation back.
+4. Outside CONFIRMING_ORDER, a bare "yes"/"okay" does not confirm anything; interpret it against lastBotMessage (e.g. answering a question the bot asked) or treat it as CHIT_CHAT.
+5. Only choose CONFIRM_ORDER when currentState is CONFIRMING_ORDER.
+
+OUTPUT RULES:
+- Return ONLY valid raw JSON. No markdown backticks or commentary.
 - {englishOnly}
-- Understand English conversational fillers, slang and typos (e.g. "ummm", "idk", "lol", "u", "plz", "wanna", "jogers") and classify by meaning.
-- Statements about the weather, hunger, jokes or other off-topic banter are CHIT_CHAT, not product queries.
-- If intent is GENERAL_CATALOG_QUERY, "extracted_query" MUST be null.
-- Short words, fillers or incomplete sentences MUST be classified as CHIT_CHAT (or UNKNOWN), NEVER as CANCEL_ORDER, QUERY_PRODUCT or CONFIRM_ORDER. They are not a reset; the active stage is preserved.
-- Only choose CONFIRM_ORDER if the current stage is CONFIRMING_ORDER.
-- For CHIT_CHAT/UNKNOWN set "extracted_query" to null.
+- Write "reasoning" FIRST (step by step: what does the user mean specifically within the active dialogue state?), then decide "intent".
+- Use null for entities that are not present.
 
-Expected JSON schema:
+JSON schema:
 {{
+  "reasoning": "Step-by-step contextual evaluation of the user message within the active dialogue state",
   "intent": "GREETING" | "GENERAL_CATALOG_QUERY" | "QUERY_PRODUCT" | "CHECK_ORDER" | "ADD_TO_CART" | "COLLECT_INFO" | "CONFIRM_ORDER" | "CANCEL_ORDER" | "CHIT_CHAT" | "UNKNOWN",
   "confidence": 0.95,
-  "extracted_query": "specific product name / order id / or null",
-  "extracted_info": {{
-    "name": "Customer Name or null",
-    "phone": "Phone number or null",
-    "address": "Shipping address or null",
-    "quantity": 1
+  "extractedEntities": {{
+    "product": null,
+    "quantity": null,
+    "name": null,
+    "phone": null,
+    "address": null
   }}
 }}`,
       ],
-      ['user', '{input}'],
+      ['user', '{userMessage}'],
     ]);
 
     try {
       const formatted = await prompt.formatMessages({
-        currentStage,
-        draftStatus,
+        currentState: context.currentState,
+        lastBotMessage: context.lastBotMessage || 'None',
+        pendingContext: this.buildPendingContext(context),
         englishOnly: ENGLISH_ONLY_INSTRUCTION,
-        input: userInput,
+        userMessage: userInput,
       });
       const response = await this.llmService.getIntentModel().invoke(formatted);
 
       const content =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content);
+        typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
 
       return this.parseIntentResponse(content, userInput);
     } catch (error) {
       this.logger.warn(
-        `Intent classification LLM call issue for input "${userInput}": ${error.message}. Defaulting to QUERY_PRODUCT fallback.`,
+        `Intent classification LLM call failed for input "${userInput}": ${error.message}. Resolving to UNKNOWN (state preserved).`,
       );
-      return {
-        intent: IntentType.QUERY_PRODUCT,
-        confidence: 0.5,
-        extracted_query: userInput.trim(),
-      };
+      return { intent: IntentType.UNKNOWN, confidence: 0.0, extracted_query: null };
     }
+  }
+
+  private asTrimmedString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 
   private parseIntentResponse(rawResponse: string, userInput?: string): IntentResult {
@@ -294,21 +181,19 @@ Expected JSON schema:
 
       const parsed = JSON.parse(cleaned);
 
-      const validIntents = Object.values(IntentType);
-      const intent = validIntents.includes(parsed.intent)
+      const intent = Object.values(IntentType).includes(parsed.intent)
         ? (parsed.intent as IntentType)
-        : IntentType.QUERY_PRODUCT;
+        : IntentType.UNKNOWN;
 
       const confidence =
-        typeof parsed.confidence === 'number'
-          ? Math.min(Math.max(parsed.confidence, 0), 1)
-          : 0.5;
+        typeof parsed.confidence === 'number' ? Math.min(Math.max(parsed.confidence, 0), 1) : 0.5;
 
-      let extracted_query =
-        parsed.extracted_query && typeof parsed.extracted_query === 'string'
-          ? parsed.extracted_query.trim()
-          : null;
+      const entities =
+        parsed.extractedEntities && typeof parsed.extractedEntities === 'object'
+          ? parsed.extractedEntities
+          : {};
 
+      let extracted_query: string | null = this.asTrimmedString(entities.product) ?? null;
       if (intent === IntentType.GENERAL_CATALOG_QUERY) {
         extracted_query = null;
       } else if (!extracted_query && intent === IntentType.QUERY_PRODUCT) {
@@ -316,36 +201,26 @@ Expected JSON schema:
       }
 
       const extracted_info: ExtractedInfo = {};
-      if (parsed.extracted_info && typeof parsed.extracted_info === 'object') {
-        if (parsed.extracted_info.name && typeof parsed.extracted_info.name === 'string') {
-          extracted_info.name = parsed.extracted_info.name.trim();
-        }
-        if (parsed.extracted_info.phone && typeof parsed.extracted_info.phone === 'string') {
-          extracted_info.phone = parsed.extracted_info.phone.trim();
-        }
-        if (parsed.extracted_info.address && typeof parsed.extracted_info.address === 'string') {
-          extracted_info.address = parsed.extracted_info.address.trim();
-        }
-        if (typeof parsed.extracted_info.quantity === 'number') {
-          extracted_info.quantity = parsed.extracted_info.quantity;
-        }
-      }
+      const name = this.asTrimmedString(entities.name);
+      const phone = this.asTrimmedString(entities.phone);
+      const address = this.asTrimmedString(entities.address);
+      if (name) extracted_info.name = name;
+      if (phone) extracted_info.phone = phone;
+      if (address) extracted_info.address = address;
+      if (typeof entities.quantity === 'number') extracted_info.quantity = entities.quantity;
 
       return {
         intent,
         confidence,
         extracted_query,
         extracted_info: Object.keys(extracted_info).length > 0 ? extracted_info : undefined,
+        reasoning: this.asTrimmedString(parsed.reasoning),
       };
-    } catch (parseError) {
+    } catch {
       this.logger.warn(
-        `Failed to parse LLM intent JSON output: "${rawResponse}". Falling back to QUERY_PRODUCT.`,
+        `Failed to parse LLM intent JSON output: "${rawResponse}". Resolving to UNKNOWN (state preserved).`,
       );
-      return {
-        intent: IntentType.QUERY_PRODUCT,
-        confidence: 0.5,
-        extracted_query: userInput?.trim() || null,
-      };
+      return { intent: IntentType.UNKNOWN, confidence: 0.0, extracted_query: null };
     }
   }
 }

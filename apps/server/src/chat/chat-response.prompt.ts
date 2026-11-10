@@ -25,11 +25,14 @@ function buildSteeringBlock(params: PromptContextParams): string {
   const { stage, cart, draftOrder } = session;
   const product = lastViewedProduct?.name || cart[cart.length - 1]?.name || null;
 
+  const pendingCart =
+    cart.length > 0 ? cart.map((c) => `${c.quantity}x ${c.name}`).join(', ') : 'empty';
   const context = [
     `- Current stage: ${stage}`,
     `- Last action: ${lastAction || 'none'}`,
     `- Product being explored: ${product || 'none'}`,
-    lastBotMessage ? `- Your previous message: "${lastBotMessage}"` : null,
+    `- Pending cart: ${pendingCart}`,
+    lastBotMessage ? `- Your previous message (lastBotMessage): "${lastBotMessage}"` : null,
   ]
     .filter(Boolean)
     .join('\n');
@@ -62,8 +65,8 @@ If the message is a totally empty fragment (e.g. "umm", "hmm"), gently ask: "Sur
 ${context}
 
 RULES:
-1. Acknowledge the customer's message or personality in ONE short, warm phrase. Never lecture or ignore it.
-2. ALWAYS end by re-anchoring to the current goal below. Never leave the customer without a next step.
+1. Acknowledge the customer's off-topic input briefly and politely in ONE friendly sentence. Never lecture or ignore it.
+2. IMMEDIATELY steer them back to completing the current stage using the pending context and your previous message above. ALWAYS end by re-anchoring to the current goal below. Never leave the customer without a next step.
 3. Do NOT reset, forget or restart the current context (stage, cart, product, draft order). Do NOT invent products.
 4. Keep it to 1-3 short sentences in a natural, polite, conversational English tone; never sound robotic.
 5. ${stageRule}`;

@@ -4,7 +4,7 @@ jest.mock('@nestjs/bullmq', () => ({
 }));
 
 import { ChatService } from '../chat.service';
-import { IntentService, IntentType } from '../intent.service';
+import { IntentContext, IntentService, IntentType } from '../intent.service';
 import { ENGLISH_ONLY_INSTRUCTION } from '../language-policy';
 import { buildStageAwareSystemPrompt } from '../chat-response.prompt';
 import { RedisService } from '../../redis/redis.service';
@@ -149,31 +149,143 @@ describe('Context-Aware Steering', () => {
     });
   });
 
-  describe('Intent fast-path for English fillers', () => {
-    const intentService = new IntentService({ getIntentModel: () => ({ invoke: jest.fn() }) } as any);
+  describe('Pure-LLM intent pipeline (no keyword fast-paths)', () => {
+    const ctx = (over: Partial<IntentContext> = {}): IntentContext => ({
+      currentState: ChatStage.IDLE,
+      ...over,
+    });
 
-    it.each(['ummm', 'wait a sec', 'idk', 'hmm', 'lol', 'uhh...'])(
-      '"%s" is CHIT_CHAT without calling the LLM',
+    /** Intent model that records every call and replies with a scripted JSON payload. */
+    function scriptedService(reply: Record<string, any> | string) {
+      const calls: string[] = [];
+      const svc = new IntentService({
+        getIntentModel: () => ({
+          invoke: async (messages: any[]) => {
+            calls.push(messages.map((m) => String(m.content)).join('\n'));
+            return { content: typeof reply === 'string' ? reply : JSON.stringify(reply) };
+          },
+        }),
+      } as any);
+      return { svc, calls };
+    }
+
+    it('has no legacy fast-path helpers', () => {
+      expect((IntentService.prototype as any).matchFastRules).toBeUndefined();
+    });
+
+    it.each(['yes', 'hi', 'lol', 'wait a sec', 'cancel', '0912345678'])(
+      'sends "%s" to the LLM instead of intercepting it',
       async (text) => {
-        const result = await intentService.classifyIntent(text, ChatStage.IDLE);
+        const { svc, calls } = scriptedService({ intent: 'CHIT_CHAT', confidence: 0.9 });
+        const result = await svc.classifyIntent(text, ctx());
+        expect(calls).toHaveLength(1);
         expect(result.intent).toBe(IntentType.CHIT_CHAT);
-        expect(result.extracted_query).toBeNull();
       },
     );
 
-    it('treats a bare "ok" as filler outside CONFIRMING_ORDER', async () => {
-      const result = await intentService.classifyIntent('ok', ChatStage.COLLECTING_USER_INFO);
-      expect(result.intent).toBe(IntentType.CHIT_CHAT);
+    it('injects currentState, lastBotMessage, pendingContext and the raw message', async () => {
+      const { svc, calls } = scriptedService({ intent: 'CONFIRM_ORDER', confidence: 0.97 });
+      await svc.classifyIntent('looks fine', {
+        currentState: ChatStage.COLLECTING_USER_INFO,
+        lastBotMessage: 'What is your shipping address?',
+        cart: [{ productId: 'p1', name: 'Nike Shorts', price: 30, quantity: 2 }],
+        draftOrder: { name: 'Alex', phone: '0912345678' },
+        lastViewedProduct: { name: 'Nike Shorts' },
+      });
+      const prompt = calls[0];
+      expect(prompt).toContain('currentState: COLLECTING_USER_INFO');
+      expect(prompt).toContain('lastBotMessage: What is your shipping address?');
+      expect(prompt).toContain('Cart: 2x Nike Shorts');
+      expect(prompt).toContain('address=MISSING');
+      expect(prompt).toContain('Missing checkout fields: address');
+      expect(prompt).toContain('Product being viewed: Nike Shorts');
+      expect(prompt).toContain('looks fine');
+      expect(prompt).toContain('dialogue state reasoning engine');
+      expect(prompt).toContain('"reasoning"');
+      expect(prompt).toContain('"extractedEntities"');
+      expect(prompt).toContain('CONFIRMING_ORDER context');
+      expect(prompt).toContain('COLLECTING_USER_INFO context');
+      expect(prompt).toContain(ENGLISH_ONLY_INSTRUCTION);
     });
 
-    it('treats "ok" as confirmation inside CONFIRMING_ORDER', async () => {
-      const result = await intentService.classifyIntent('ok', ChatStage.CONFIRMING_ORDER);
-      expect(result.intent).toBe(IntentType.CONFIRM_ORDER);
+    it('parses reasoning, intent and extractedEntities', async () => {
+      const { svc } = scriptedService({
+        reasoning: 'The bot asked for contact details and the user gave a phone number.',
+        intent: 'COLLECT_INFO',
+        confidence: 0.95,
+        extractedEntities: { product: null, quantity: null, name: null, phone: '0912345678', address: null },
+      });
+      const result = await svc.classifyIntent('0912345678', ctx({ currentState: ChatStage.COLLECTING_USER_INFO }));
+      expect(result.intent).toBe(IntentType.COLLECT_INFO);
+      expect(result.reasoning).toContain('phone number');
+      expect(result.extracted_info).toEqual({ phone: '0912345678' });
+      expect(result.extracted_query).toBeNull();
     });
 
-    it('does not treat fillers as a cancel/reset', async () => {
-      const result = await intentService.classifyIntent('wait', ChatStage.CONFIRMING_ORDER);
-      expect(result.intent).not.toBe(IntentType.CANCEL_ORDER);
+    it('maps extractedEntities.product / quantity for ADD_TO_CART', async () => {
+      const { svc } = scriptedService({
+        intent: 'ADD_TO_CART',
+        confidence: 0.9,
+        extractedEntities: { product: 'Adidas Joggers', quantity: 2 },
+      });
+      const result = await svc.classifyIntent('two of those joggers please', ctx());
+      expect(result.extracted_query).toBe('Adidas Joggers');
+      expect(result.extracted_info?.quantity).toBe(2);
+    });
+
+    it('resolves to UNKNOWN (state preserved) when the LLM fails or returns bad JSON', async () => {
+      const bad = scriptedService('not json at all');
+      expect((await bad.svc.classifyIntent('hello', ctx())).intent).toBe(IntentType.UNKNOWN);
+
+      const failing = new IntentService({
+        getIntentModel: () => ({
+          invoke: async () => {
+            throw new Error('groq down');
+          },
+        }),
+      } as any);
+      expect((await failing.classifyIntent('hello', ctx())).intent).toBe(IntentType.UNKNOWN);
+    });
+
+    describe('end-to-end with LLM-resolved intents', () => {
+      const confirming = () =>
+        makeSession({
+          stage: ChatStage.CONFIRMING_ORDER,
+          cart: [{ productId: 'nike-1', name: 'Nike Shorts', price: 30, quantity: 2 }],
+          draftOrder: { name: 'Alex', phone: '0912345678', address: '12 Baker Street' },
+          lastBotMessage: "Reply 'Yes' to confirm your order.",
+        });
+
+      it('places the order when the LLM resolves an affirmation to CONFIRM_ORDER', async () => {
+        const h = createHarness(confirming(), () => ({ intent: 'CONFIRM_ORDER', confidence: 0.97 }));
+        const res = await h.chat.processMessage(TENANT, 'sounds good, go for it', CONV);
+        expect(h.intentLlmCalls()).toBe(1);
+        expect(res.intent).toBe(IntentType.CONFIRM_ORDER);
+        expect((h.chat as any).ordersService.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('cancels and resets when the LLM resolves a rejection to CANCEL_ORDER', async () => {
+        const h = createHarness(confirming(), () => ({ intent: 'CANCEL_ORDER', confidence: 0.97 }));
+        const res = await h.chat.processMessage(TENANT, 'nah forget it', CONV);
+        expect(res.intent).toBe(IntentType.CANCEL_ORDER);
+        expect((h.chat as any).ordersService.create).not.toHaveBeenCalled();
+        expect(h.savedSession()).toBeNull();
+      });
+
+      it('does not place an order when the LLM resolves "yes" as chit-chat in IDLE', async () => {
+        const h = createHarness(makeSession(), () => ({ intent: 'CHIT_CHAT', confidence: 0.8 }));
+        const res = await h.chat.processMessage(TENANT, 'yes', CONV);
+        expect(res.intent).toBe(IntentType.CHIT_CHAT);
+        expect((h.chat as any).ordersService.create).not.toHaveBeenCalled();
+      });
+
+      it('hands the session context to the classifier prompt', async () => {
+        const h = createHarness(confirming(), () => ({ intent: 'CONFIRM_ORDER', confidence: 0.9 }));
+        await h.chat.processMessage(TENANT, 'ok', CONV);
+        expect(h.intentPrompts[0]).toContain('currentState: CONFIRMING_ORDER');
+        expect(h.intentPrompts[0]).toContain("lastBotMessage: Reply 'Yes' to confirm your order.");
+        expect(h.intentPrompts[0]).toContain('Cart: 2x Nike Shorts');
+      });
     });
   });
 
@@ -292,6 +404,9 @@ describe('Context-Aware Steering', () => {
       expect(prompt).toContain("Reply 'Yes' to confirm");
       expect(prompt).toMatch(/edit anything/i);
       expect(prompt).toContain('proceed with the order confirmation or make changes');
+      expect(prompt).toContain('ONE friendly sentence');
+      expect(prompt).toContain('IMMEDIATELY steer them back');
+      expect(prompt).toContain('Pending cart: 2x Nike Women\'s Running Shorts');
 
       const saved = h.savedSession()!;
       expect(saved.stage).toBe(ChatStage.CONFIRMING_ORDER);
