@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+  faChevronDown,
+  faComments,
+  faPaperPlane,
+  faRobot,
+  faUser,
+} from '@fortawesome/free-solid-svg-icons';
 import {
   api,
   openLiveStream,
   type ChatMessage,
   type Conversation,
   type LiveEvent,
+  type SenderType,
 } from './api';
 import { timeAgo } from './ui';
 
@@ -17,7 +26,12 @@ function upsertMessage(list: ChatMessage[], msg: ChatMessage) {
   return list.some((m) => m.id === msg.id) ? list : [...list, msg];
 }
 
-const SENDER_LABEL = { USER: 'Customer', ASSISTANT: '🤖 AI assistant', AGENT: '👤 You (agent)', SYSTEM: 'System' } as const;
+const SENDER_LABEL: Record<SenderType, string> = {
+  USER: 'Customer',
+  ASSISTANT: 'AI assistant',
+  AGENT: 'You (agent)',
+  SYSTEM: 'System',
+};
 
 export default function Conversations() {
   const [convos, setConvos] = useState<Conversation[]>([]);
@@ -191,9 +205,13 @@ export default function Conversations() {
               </div>
               <div className="row">
                 <span className="preview">{c.lastMessagePreview}</span>
-                {c.unreadCount > 0
-                  ? <span className="badge unread">{c.unreadCount}</span>
-                  : <span className="mode-dot" title={c.isHumanMode ? 'Human mode' : 'AI mode'}>{c.isHumanMode ? '👤' : '🤖'}</span>}
+                {c.unreadCount > 0 ? (
+                  <span className="badge unread">{c.unreadCount}</span>
+                ) : (
+                  <span className="mode-dot" title={c.isHumanMode ? 'Human mode' : 'AI mode'}>
+                    <FontAwesomeIcon icon={c.isHumanMode ? faUser : faRobot} />
+                  </span>
+                )}
               </div>
             </div>
           </button>
@@ -204,7 +222,9 @@ export default function Conversations() {
         {!selected ? (
           <div className="placeholder">
             <div>
-              <div className="big">💬</div>
+              <div className="big">
+                <FontAwesomeIcon icon={faComments} />
+              </div>
               <h3>Select a conversation</h3>
               <p>Pick a Telegram customer on the left to read the thread or take over from the AI.</p>
             </div>
@@ -214,11 +234,17 @@ export default function Conversations() {
             <header className="thread-header">
               <div>
                 <h3>{displayName(selected)}</h3>
-                <small>{selected.username ? `@${selected.username} · ` : ''}Telegram chat {selected.id}</small>
+                <small>{selected.username ? `@${selected.username} / ` : ''}Telegram chat {selected.id}</small>
               </div>
               <div className="mode-toggle" role="group" aria-label="Conversation mode">
-                <button id="mode-ai" className={!humanMode ? 'on' : ''} disabled={toggling} onClick={() => setMode(false)}>🤖 AI Mode</button>
-                <button id="mode-human" className={humanMode ? 'on human' : ''} disabled={toggling} onClick={() => setMode(true)}>👤 Human Mode</button>
+                <button id="mode-ai" className={!humanMode ? 'on' : ''} disabled={toggling} onClick={() => setMode(false)}>
+                  <FontAwesomeIcon icon={faRobot} />
+                  <span>AI Mode</span>
+                </button>
+                <button id="mode-human" className={humanMode ? 'on human' : ''} disabled={toggling} onClick={() => setMode(true)}>
+                  <FontAwesomeIcon icon={faUser} />
+                  <span>Human Mode</span>
+                </button>
               </div>
             </header>
 
@@ -228,7 +254,11 @@ export default function Conversations() {
                   <div key={m.id} className={`msg ${m.senderType.toLowerCase()}`}>
                     <div className="bubble">{m.content}</div>
                     <div className="meta">
-                      {SENDER_LABEL[m.senderType]} · {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {m.senderType === 'ASSISTANT' && <FontAwesomeIcon icon={faRobot} />}
+                      {(m.senderType === 'AGENT' || m.senderType === 'USER') && <FontAwesomeIcon icon={faUser} />}
+                      <span>
+                        {SENDER_LABEL[m.senderType]} · {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -240,9 +270,7 @@ export default function Conversations() {
                   onClick={() => scrollToBottom('smooth')}
                   aria-label="Scroll to bottom"
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
+                  <FontAwesomeIcon icon={faChevronDown} />
                   <span>Scroll to bottom</span>
                 </button>
               )}
@@ -257,7 +285,7 @@ export default function Conversations() {
                 rows={1}
                 value={draft}
                 disabled={!humanMode || sending}
-                placeholder={humanMode ? 'Type a reply — sent directly to the customer on Telegram…' : 'Switch to Human Mode to reply'}
+                placeholder={humanMode ? 'Type a reply - sent directly to the customer on Telegram...' : 'Switch to Human Mode to reply'}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -267,7 +295,8 @@ export default function Conversations() {
                 }}
               />
               <button id="reply-send" className="btn primary" disabled={!humanMode || sending || !draft.trim()}>
-                {sending ? 'Sending…' : 'Send'}
+                <FontAwesomeIcon icon={faPaperPlane} />
+                <span>{sending ? 'Sending...' : 'Send'}</span>
               </button>
             </form>
             <div className="composer-hint">

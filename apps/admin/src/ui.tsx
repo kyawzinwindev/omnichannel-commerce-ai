@@ -1,4 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+  faCheck,
+  faChevronLeft,
+  faChevronRight,
+  faTimes,
+  faTriangleExclamation,
+} from '@fortawesome/free-solid-svg-icons';
 import type { PageMeta } from './api';
 
 /* ---------- Toasts ---------- */
@@ -20,7 +28,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toasts" role="status" aria-live="polite">
         {items.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>{t.kind === 'success' ? '✓' : '⚠'} {t.text}</div>
+          <div key={t.id} className={`toast ${t.kind}`}>
+            <FontAwesomeIcon
+              icon={t.kind === 'success' ? faCheck : faTriangleExclamation}
+              className="toast-icon"
+            />
+            <span>{t.text}</span>
+          </div>
         ))}
       </div>
     </ToastContext.Provider>
@@ -43,7 +57,9 @@ export function Modal({ title, onClose, children, drawer = false }: { title: str
       <div className={drawer ? 'drawer' : 'modal'} role="dialog" aria-modal="true" aria-label={title}>
         <header className="modal-head">
           <h3>{title}</h3>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Close">
+            <FontAwesomeIcon icon={faTimes} />
+          </button>
         </header>
         {children}
       </div>
@@ -59,7 +75,7 @@ export function ConfirmDialog({ title, message, confirmLabel, busy, onConfirm, o
       <div className="modal-body">{message}</div>
       <footer className="modal-foot">
         <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
-        <button className="btn danger" onClick={onConfirm} disabled={busy}>{busy ? 'Working…' : confirmLabel}</button>
+        <button className="btn danger" onClick={onConfirm} disabled={busy}>{busy ? 'Working...' : confirmLabel}</button>
       </footer>
     </Modal>
   );
@@ -79,11 +95,17 @@ export function Pager({ meta, onPage }: { meta: PageMeta; onPage: (p: number) =>
   const to = Math.min(meta.page * meta.pageSize, meta.total);
   return (
     <div className="pager">
-      <span>{from}–{to} of {meta.total}</span>
+      <span>{from}-{to} of {meta.total}</span>
       <div className="btns">
-        <button className="btn ghost" disabled={meta.page <= 1} onClick={() => onPage(meta.page - 1)}>← Prev</button>
-        <span style={{ alignSelf: 'center' }}>Page {meta.page} / {meta.totalPages}</span>
-        <button className="btn ghost" disabled={meta.page >= meta.totalPages} onClick={() => onPage(meta.page + 1)}>Next →</button>
+        <button className="btn sm" disabled={meta.page <= 1} onClick={() => onPage(meta.page - 1)}>
+          <FontAwesomeIcon icon={faChevronLeft} />
+          <span>Prev</span>
+        </button>
+        <span className="pager-page">Page {meta.page} / {meta.totalPages}</span>
+        <button className="btn sm" disabled={meta.page >= meta.totalPages} onClick={() => onPage(meta.page + 1)}>
+          <span>Next</span>
+          <FontAwesomeIcon icon={faChevronRight} />
+        </button>
       </div>
     </div>
   );

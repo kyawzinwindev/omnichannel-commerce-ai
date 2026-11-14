@@ -406,6 +406,7 @@ describe('Context-Aware Steering', () => {
       expect(prompt).toContain('proceed with the order confirmation or make changes');
       expect(prompt).toContain('ONE friendly sentence');
       expect(prompt).toContain('IMMEDIATELY steer them back');
+      expect(prompt).toContain('The order has NOT been placed yet');
       expect(prompt).toContain('Pending cart: 2x Nike Women\'s Running Shorts');
 
       const saved = h.savedSession()!;

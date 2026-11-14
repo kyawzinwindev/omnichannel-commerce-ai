@@ -126,7 +126,7 @@ CONTEXT EVALUATION RULES:
 OUTPUT RULES:
 - Return ONLY valid raw JSON. No markdown backticks or commentary.
 - {englishOnly}
-- Write "reasoning" FIRST (step by step: what does the user mean specifically within the active dialogue state?), then decide "intent".
+- Write "reasoning" FIRST as ONE or TWO short sentences (what does the user mean specifically within the active dialogue state?), then decide "intent".
 - Use null for entities that are not present.
 
 JSON schema:

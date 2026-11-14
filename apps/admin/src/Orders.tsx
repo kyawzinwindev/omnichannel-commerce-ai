@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faCheck, faSearch, faTimes, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { api, type Order, type OrderStatus, type PageMeta } from './api';
 import { ConfirmDialog, Modal, Pager, useDebounced, useToast } from './ui';
 
@@ -40,19 +42,28 @@ function OrderDrawer({ order, busy, onStatus, onDelete, onClose }: {
             </select>
           </div>
           <div className="quick-actions">
-            <button className="btn sm" disabled={busy || order.status === 'accepted'} onClick={() => onStatus('accepted')}>Accept</button>
-            <button className="btn sm" disabled={busy || order.status === 'rejected'} onClick={() => onStatus('rejected')}>Reject</button>
-            <button className="btn sm" disabled={busy || order.status === 'delivered'} onClick={() => onStatus('delivered')}>Mark delivered</button>
+            <button className="btn sm" disabled={busy || order.status === 'accepted'} onClick={() => onStatus('accepted')}>
+              <FontAwesomeIcon icon={faCheck} />
+              <span>Accept</span>
+            </button>
+            <button className="btn sm" disabled={busy || order.status === 'rejected'} onClick={() => onStatus('rejected')}>
+              <FontAwesomeIcon icon={faTimes} />
+              <span>Reject</span>
+            </button>
+            <button className="btn sm" disabled={busy || order.status === 'delivered'} onClick={() => onStatus('delivered')}>
+              <FontAwesomeIcon icon={faCheck} />
+              <span>Mark delivered</span>
+            </button>
           </div>
         </section>
 
         <section>
           <div className="section-title">Customer</div>
           <dl className="kv">
-            <dt>Name</dt><dd>{order.customer.name ?? '—'}</dd>
-            <dt>Phone</dt><dd>{order.customer.phone ?? '—'}</dd>
-            <dt>Email</dt><dd>{order.customer.email ?? '—'}</dd>
-            <dt>Ship to</dt><dd>{order.customer.shippingAddress ?? '—'}</dd>
+            <dt>Name</dt><dd>{order.customer.name ?? '-'}</dd>
+            <dt>Phone</dt><dd>{order.customer.phone ?? '-'}</dd>
+            <dt>Email</dt><dd>{order.customer.email ?? '-'}</dd>
+            <dt>Ship to</dt><dd>{order.customer.shippingAddress ?? '-'}</dd>
             <dt>Placed</dt><dd>{new Date(order.createdAt).toLocaleString()}</dd>
           </dl>
         </section>
@@ -75,7 +86,10 @@ function OrderDrawer({ order, busy, onStatus, onDelete, onClose }: {
         </section>
       </div>
       <footer className="modal-foot">
-        <button id="order-delete" className="btn ghost danger-text" disabled={busy} onClick={onDelete}>Cancel &amp; remove order</button>
+        <button id="order-delete" className="btn ghost danger-text" disabled={busy} onClick={onDelete}>
+          <FontAwesomeIcon icon={faTrash} />
+          <span>Cancel &amp; remove order</span>
+        </button>
         <button className="btn" onClick={onClose}>Close</button>
       </footer>
     </Modal>
@@ -164,14 +178,22 @@ export default function Orders() {
       </header>
 
       <div className="toolbar">
-        <input id="order-search" className="field search" placeholder="Search by order # or customer…" value={search} onChange={filter(setSearch)} />
+        <div className="search-wrap">
+          <FontAwesomeIcon icon={faSearch} className="search-icon" />
+          <input id="order-search" className="field search" placeholder="Search by order # or customer..." value={search} onChange={filter(setSearch)} />
+        </div>
         <select id="filter-status" className="field" value={status} onChange={filter(setStatus)}>
           <option value="">All statuses</option>
           {STATUSES.map((s) => <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>)}
         </select>
         <input id="filter-from" type="date" className="field" title="From date" value={from} max={to || undefined} onChange={filter(setFrom)} />
         <input id="filter-to" type="date" className="field" title="To date" value={to} min={from || undefined} onChange={filter(setTo)} />
-        {(from || to) && <button className="btn ghost" onClick={() => { setFrom(''); setTo(''); setPage(1); }}>Clear dates</button>}
+        {(from || to) && (
+          <button className="btn ghost sm" onClick={() => { setFrom(''); setTo(''); setPage(1); }}>
+            <FontAwesomeIcon icon={faTimes} />
+            <span>Clear dates</span>
+          </button>
+        )}
       </div>
 
       {error && <div className="error-box">{error}</div>}
@@ -191,11 +213,11 @@ export default function Orders() {
                     <tr key={o.id} className="clickable" onClick={() => setSelected(o)}>
                       <td className="strong">#{o.orderNumber}</td>
                       <td>
-                        {o.customer.name ?? '—'}
+                        {o.customer.name ?? '-'}
                         <div className="cell-sub">{o.customer.phone ?? o.customer.email}</div>
                         {o.customer.shippingAddress && <div className="cell-sub">{o.customer.shippingAddress}</div>}
                       </td>
-                      <td style={{ maxWidth: 280 }}>{o.itemsSummary || '—'}</td>
+                      <td style={{ maxWidth: 280 }}>{o.itemsSummary || '-'}</td>
                       <td className="num strong">${o.totalAmount.toFixed(2)}</td>
                       <td><span className={`badge ${STATUS_STYLE[o.status] ?? ''}`}>{o.status}</span></td>
                       <td className="muted">{fmtDate(o.createdAt)}</td>

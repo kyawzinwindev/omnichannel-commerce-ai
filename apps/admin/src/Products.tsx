@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faEdit, faPlus, faSearch, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { api, type Gender, type PageMeta, type Product, type ProductInput, type ProductsResponse } from './api';
 import { ConfirmDialog, Modal, Pager, useDebounced, useToast } from './ui';
 
@@ -8,7 +10,7 @@ const GENDERS: { value: Gender; label: string }[] = [
   { value: 'UNISEX', label: 'Unisex' },
 ];
 
-const genderLabel = (g: string | null) => GENDERS.find((x) => x.value === g)?.label ?? '—';
+const genderLabel = (g: string | null) => GENDERS.find((x) => x.value === g)?.label ?? '-';
 
 interface FormState {
   name: string;
@@ -40,10 +42,10 @@ function validate(f: FormState): Errors {
   if (!f.brand.trim()) e.brand = 'Brand is required';
   if (!f.categoryType.trim()) e.categoryType = 'Category type is required';
   const price = Number(f.price);
-  if (f.price === '' || Number.isNaN(price) || price < 0) e.price = 'Enter a valid price (≥ 0)';
+  if (f.price === '' || Number.isNaN(price) || price < 0) e.price = 'Enter a valid price (>= 0)';
   else if (!/^\d+(\.\d{1,2})?$/.test(f.price.trim())) e.price = 'At most 2 decimal places';
   const stock = Number(f.stock);
-  if (f.stock === '' || !Number.isInteger(stock) || stock < 0) e.stock = 'Stock must be a whole number ≥ 0';
+  if (f.stock === '' || !Number.isInteger(stock) || stock < 0) e.stock = 'Stock must be a whole number >= 0';
   return e;
 }
 
@@ -83,7 +85,7 @@ function ProductForm({ product, brands, types, onClose, onSaved }: {
     try {
       if (product) await api.updateProduct(product.id, body);
       else await api.createProduct(body);
-      toast('success', product ? `Updated “${body.name}”` : `Added “${body.name}”`);
+      toast('success', product ? `Updated "${body.name}"` : `Added "${body.name}"`);
       onSaved();
     } catch (e) {
       toast('error', e instanceof Error ? e.message : 'Could not save product');
@@ -131,7 +133,7 @@ function ProductForm({ product, brands, types, onClose, onSaved }: {
         </div>
         <footer className="modal-foot">
           <button type="button" className="btn ghost" onClick={onClose} disabled={saving}>Cancel</button>
-          <button id="product-save" className="btn primary" disabled={saving}>{saving ? 'Saving…' : product ? 'Save changes' : 'Add product'}</button>
+          <button id="product-save" className="btn primary" disabled={saving}>{saving ? 'Saving...' : product ? 'Save changes' : 'Add product'}</button>
         </footer>
       </form>
     </Modal>
@@ -179,7 +181,7 @@ export default function Products() {
     setBusy(true);
     try {
       await api.deleteProduct(deleting.id);
-      toast('success', `Deleted “${deleting.name}”`);
+      toast('success', `Deleted "${deleting.name}"`);
       // Step back a page if we just removed the last row of this one.
       if (res && res.data.length === 1 && page > 1) setPage(page - 1);
       reload();
@@ -202,11 +204,17 @@ export default function Products() {
           <h2>Products</h2>
           <p>{meta ? `${meta.total} apparel items in the catalog` : 'Apparel catalog'}</p>
         </div>
-        <button id="add-product" className="btn primary" onClick={() => setEditing('new')}>＋ Add product</button>
+        <button id="add-product" className="btn primary" onClick={() => setEditing('new')}>
+          <FontAwesomeIcon icon={faPlus} />
+          <span>Add product</span>
+        </button>
       </header>
 
       <div className="toolbar">
-        <input id="product-search" className="field search" placeholder="Search products…" value={search} onChange={reset(setSearch)} />
+        <div className="search-wrap">
+          <FontAwesomeIcon icon={faSearch} className="search-icon" />
+          <input id="product-search" className="field search" placeholder="Search products..." value={search} onChange={reset(setSearch)} />
+        </div>
         <select id="filter-brand" className="field" value={brand} onChange={reset(setBrand)}>
           <option value="">All brands</option>
           {res?.filters.brands.map((b) => <option key={b}>{b}</option>)}
@@ -246,13 +254,29 @@ export default function Products() {
                       <td className="num strong">${p.price.toFixed(2)}</td>
                       <td className="num">
                         {p.stock === 0 ? <span className="stock-out">Out of stock</span>
-                          : p.stock <= 10 ? <span className="stock-low">{p.stock} · low</span>
+                          : p.stock <= 10 ? <span className="stock-low">{p.stock} (low)</span>
                           : p.stock}
                       </td>
                       <td>
                         <div className="row-actions">
-                          <button id={`edit-product-${p.id}`} className="btn ghost sm" onClick={() => setEditing(p)}>Edit</button>
-                          <button id={`delete-product-${p.id}`} className="btn ghost sm danger-text" onClick={() => setDeleting(p)}>Delete</button>
+                          <button
+                            id={`edit-product-${p.id}`}
+                            className="icon-btn"
+                            title="Edit product"
+                            aria-label="Edit product"
+                            onClick={() => setEditing(p)}
+                          >
+                            <FontAwesomeIcon icon={faEdit} />
+                          </button>
+                          <button
+                            id={`delete-product-${p.id}`}
+                            className="icon-btn danger-text"
+                            title="Delete product"
+                            aria-label="Delete product"
+                            onClick={() => setDeleting(p)}
+                          >
+                            <FontAwesomeIcon icon={faTrash} />
+                          </button>
                         </div>
                       </td>
                     </tr>

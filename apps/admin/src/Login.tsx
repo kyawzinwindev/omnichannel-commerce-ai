@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faBagShopping } from '@fortawesome/free-solid-svg-icons';
 import { api, auth } from './api';
 
 export default function Login({ onSuccess }: { onSuccess: (email: string) => void }) {
@@ -26,7 +28,9 @@ export default function Login({ onSuccess }: { onSuccess: (email: string) => voi
     <main className="login">
       <section className="card login-card">
         <div className="brand">
-          <div className="brand-logo">🛍️</div>
+          <div className="brand-logo">
+            <FontAwesomeIcon icon={faBagShopping} />
+          </div>
           <div>
             <h1>Omnichannel</h1>
             <small>Commerce AI Admin</small>
@@ -45,7 +49,7 @@ export default function Login({ onSuccess }: { onSuccess: (email: string) => voi
             <input id="login-password" className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
           </label>
           <button id="login-submit" className="btn primary" disabled={loading}>
-            {loading ? 'Signing in…' : 'Sign in'}
+            {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
       </section>

@@ -113,7 +113,8 @@ Total Amount: $${total.toFixed(2)}
 INSTRUCTIONS:
 1. Present the order summary concisely.
 2. Ask for the customer's final confirmation to place the order (e.g. "Reply 'Yes' to confirm and place your order, or let me know if you would like to edit anything.").
-3. Do NOT ask for name, phone, or address again as they are already provided.`;
+3. Do NOT ask for name, phone, or address again as they are already provided.
+4. The order has NOT been placed yet. NEVER say or imply the order is placed, confirmed, submitted or shipped, even if the customer said "yes" — only the system places orders. If the customer seems to agree, ask them to reply "Yes" once more to confirm.`;
 
     prompt += steering + formatInstruction + languageInstruction;
     return prompt;

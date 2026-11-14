@@ -23,11 +23,13 @@ export class LlmService {
     );
 
     // Intent classification: deterministic, strict JSON output (Groq JSON mode).
+    // gpt-oss models spend hidden reasoning tokens before the visible output, so the
+    // budget must leave room for both or Groq fails with `json_validate_failed`.
     this.intentModel = new ChatGroq({
       apiKey: apiKey || 'missing_groq_key',
       model: GROQ_INTENT_MODEL,
       temperature: 0.1,
-      maxTokens: 300,
+      maxTokens: 1500,
       maxRetries: 1,
     }).bind({ response_format: { type: 'json_object' } });
 
@@ -36,7 +38,7 @@ export class LlmService {
       apiKey: apiKey || 'missing_groq_key',
       model: GROQ_RESPONSE_MODEL,
       temperature: 0.3,
-      maxTokens: 500,
+      maxTokens: 2000,
       maxRetries: 1,
     });
   }
