@@ -1,3 +1,9 @@
+export interface ProductSearchFilters {
+  brand?: string | null;
+  targetGender?: string | null;
+  categoryType?: string | null;
+}
+
 export interface ProductItem {
   id: string;
   name: string;
@@ -13,6 +19,7 @@ export interface ProductItem {
   image?: string | null;
   attributes?: Record<string, any> | null;
   similarity?: number;
+  rrfScore?: number;
 }
 
 export interface OrderItem {
@@ -35,7 +42,12 @@ export interface OrderSummaryResult {
 }
 
 export interface IStoreProvider {
-  getProductList(tenantId: string, query?: string, limit?: number): Promise<ProductItem[]>;
+  getProductList(
+    tenantId: string,
+    query?: string,
+    limit?: number,
+    filters?: ProductSearchFilters,
+  ): Promise<ProductItem[]>;
   getOrderSummary(tenantId: string, orderNumber: string): Promise<OrderSummaryResult | null>;
 }
 

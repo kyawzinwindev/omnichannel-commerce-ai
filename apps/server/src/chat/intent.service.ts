@@ -24,6 +24,9 @@ export interface ExtractedInfo {
   quantity?: number;
   color?: string;
   size?: string;
+  brand?: string;
+  targetGender?: string;
+  categoryType?: string;
 }
 
 export interface IntentResult {
@@ -116,10 +119,10 @@ pendingContext:
 
 INTENTS (choose EXACTLY ONE):
 - GREETING: hello, hi, thanks or other pleasantries.
-- GENERAL_CATALOG_QUERY: broad question about what the store sells, with no specific product (extractedEntities.product MUST be null).
-- QUERY_PRODUCT: asking about a specific product, brand or feature (put the search term in extractedEntities.product).
+- GENERAL_CATALOG_QUERY: broad question about what the store sells, with no specific product, brand, gender or category filter (extractedEntities.product MUST be null).
+- QUERY_PRODUCT: asking about or searching for products, brands, categories, genders or features (put the search query in extractedEntities.product, and populate brand, targetGender and categoryType whenever mentioned).
 - CHECK_ORDER: asking for tracking/status of an existing order (put the order id in extractedEntities.product).
-- ADD_TO_CART: wants to buy / add an item, OR is choosing color / size / quantity for the item being configured. Put the product in extractedEntities.product (null when the user only gives options for the item already being configured), and any color, size and quantity mentioned in extractedEntities. Do NOT invent a default quantity: leave quantity null unless the user states it.
+- ADD_TO_CART: wants to buy / add an item, OR is choosing color / size / quantity for the item being configured. Put the product in extractedEntities.product (null when the user only gives options for the item already being configured), and any brand, targetGender, categoryType, color, size and quantity mentioned in extractedEntities. Do NOT invent a default quantity: leave quantity null unless the user states it.
 - COLLECT_INFO: providing name, phone number or delivery address.
 - CONFIRM_ORDER: agrees to finalize the pending order.
 - CANCEL_ORDER: wants to abort / cancel the order process.
@@ -145,7 +148,10 @@ CONTEXT EVALUATION RULES:
 6. Only choose CONFIRM_ORDER when currentState is CONFIRMING_ORDER.
 
 ENTITY EXTRACTION:
-- Extract product, color, size and quantity together whenever present ("I want 3 red cargo pants in size L" -> product "cargo pants", color "Red", size "L", quantity 3).
+- Extract product, brand, targetGender, categoryType, color, size and quantity together whenever present (e.g., "Adidas women's pants" -> product "Adidas women's pants", brand "Adidas", targetGender "Women", categoryType "Pants").
+- brand: brand name if mentioned (e.g. "Adidas", "Nike", "Puma", "Uniqlo"), otherwise null.
+- targetGender: "Men", "Women", or "Unisex" if mentioned (e.g. "men's" -> "Men", "for women" -> "Women"), otherwise null.
+- categoryType: store category if mentioned ("Pants", "Shorts", "T-Shirts", "Hoodies", "Jackets", "Dresses"), otherwise null.
 - size: normalise to the store's codes when obvious (small -> S, medium -> M, large -> L, extra large -> XL, double XL / 2XL -> XXL).
 - quantity: a positive integer ("a pair" / "one" -> 1, "a couple" -> 2), never a default.
 
@@ -162,6 +168,9 @@ JSON schema:
   "confidence": 0.95,
   "extractedEntities": {{
     "product": null,
+    "brand": null,
+    "targetGender": null,
+    "categoryType": null,
     "color": null,
     "size": null,
     "quantity": null,
@@ -221,11 +230,16 @@ JSON schema:
           ? parsed.extractedEntities
           : {};
 
+      const brand = this.asTrimmedString(entities.brand);
+      const targetGender = this.asTrimmedString(entities.targetGender);
+      const categoryType = this.asTrimmedString(entities.categoryType);
+
       let extracted_query: string | null = this.asTrimmedString(entities.product) ?? null;
       if (intent === IntentType.GENERAL_CATALOG_QUERY) {
         extracted_query = null;
       } else if (!extracted_query && intent === IntentType.QUERY_PRODUCT) {
-        extracted_query = userInput?.trim() || null;
+        const filterTerms = [brand, targetGender, categoryType].filter(Boolean).join(' ');
+        extracted_query = filterTerms || userInput?.trim() || null;
       }
 
       const extracted_info: ExtractedInfo = {};
@@ -235,6 +249,9 @@ JSON schema:
       if (name) extracted_info.name = name;
       if (phone) extracted_info.phone = phone;
       if (address) extracted_info.address = address;
+      if (brand) extracted_info.brand = brand;
+      if (targetGender) extracted_info.targetGender = targetGender;
+      if (categoryType) extracted_info.categoryType = categoryType;
       const color = this.asTrimmedString(entities.color);
       const size = this.asTrimmedString(entities.size);
       if (color) extracted_info.color = color;

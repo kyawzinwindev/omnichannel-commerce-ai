@@ -7,6 +7,8 @@ import { ChatService } from '../chat.service';
 import { IntentContext, IntentService, IntentType } from '../intent.service';
 import { ENGLISH_ONLY_INSTRUCTION } from '../language-policy';
 import { buildStageAwareSystemPrompt } from '../chat-response.prompt';
+import { VectorSearchService } from '../vector-search.service';
+import { LocalDbStoreProvider } from '../../products/providers/local-db-store.provider';
 import { RedisService } from '../../redis/redis.service';
 import { ChatStage, UserSessionState } from '../../redis/session-state';
 
@@ -597,6 +599,174 @@ describe('Context-Aware Steering', () => {
       expect(prompt).toContain('CONVERSATION STEERING');
       expect(prompt).toContain('Still needed: size, quantity');
       expect(prompt).toContain('Available sizes: S, M, L, XL');
+    });
+  });
+
+  describe('Scenario 6: RAG Hybrid Search (RRF) & Structured Metadata Filtering', () => {
+    it('1. Querying "Adidas women\'s pants" extracts brand, targetGender, and categoryType and passes them to the search provider', async () => {
+      const h = createHarness(makeSession(), () => ({
+        reasoning: 'User is searching for Adidas pants for women.',
+        intent: 'QUERY_PRODUCT',
+        confidence: 0.97,
+        extractedEntities: {
+          product: "Adidas women's pants",
+          brand: 'Adidas',
+          targetGender: 'Women',
+          categoryType: 'Pants',
+          color: null,
+          size: null,
+          quantity: null,
+        },
+      }));
+
+      const matched = [
+        {
+          id: 'adidas-women-pants-1',
+          name: "Adidas Women's Joggers",
+          price: 58.0,
+          brand: 'Adidas',
+          targetGender: 'WOMEN',
+          category: 'Pants',
+          stock: 25,
+          inStock: true,
+          colors: ['Black', 'Navy'],
+          sizes: ['XS', 'S', 'M', 'L'],
+          rrfScore: 0.0328,
+        },
+      ];
+      (h.chat as any).storeProvider.getProductList = jest.fn(async () => matched);
+
+      const res = await h.chat.processMessage(TENANT, "Do you have Adidas women's pants?", CONV);
+
+      expect(res.intent).toBe(IntentType.QUERY_PRODUCT);
+      expect((h.chat as any).storeProvider.getProductList).toHaveBeenCalledWith(
+        TENANT,
+        "Adidas women's pants",
+        4,
+        {
+          brand: 'Adidas',
+          targetGender: 'Women',
+          categoryType: 'Pants',
+        },
+      );
+      expect(res.products).toEqual(matched);
+    });
+
+    it('2. Redis v3 cache keys properly differentiate filtered vs unfiltered queries', async () => {
+      const getKeys: string[] = [];
+      const setKeys: string[] = [];
+      const mockRedis: any = {
+        get: jest.fn(async (k: string) => {
+          getKeys.push(k);
+          return null;
+        }),
+        set: jest.fn(async (k: string) => {
+          setKeys.push(k);
+        }),
+      };
+      const mockVector: any = {
+        searchSimilarProducts: jest.fn(async () => []),
+      };
+      const provider = new LocalDbStoreProvider({} as any, mockVector, mockRedis);
+
+      await provider.getProductList(TENANT, 'pants', 4, {
+        brand: 'Adidas',
+        targetGender: 'Women',
+        categoryType: 'Pants',
+      });
+      await provider.getProductList(TENANT, 'pants', 4);
+
+      expect(getKeys[0]).toBe('cache:products:v3:tenant-1:pants:adidas:women:pants:4');
+      expect(getKeys[1]).toBe('cache:products:v3:tenant-1:pants:all:all:all:4');
+      expect(getKeys[0]).not.toBe(getKeys[1]);
+      expect(setKeys).toEqual(getKeys);
+    });
+
+    it('3. Zero-result graceful fallback retries once with relaxed metadata filters when strict filters return 0 results', async () => {
+      const mockRedis: any = { get: jest.fn(async () => null), set: jest.fn(async () => undefined) };
+      const fallbackItem = {
+        id: 'adidas-unisex-pants-1',
+        tenant_id: TENANT,
+        name: "Adidas Women's Track Pants",
+        description: 'Track pants',
+        price: 59.99,
+        brand: 'Adidas',
+        target_gender: 'WOMEN',
+        category_type: 'Pants',
+        stock: 15,
+        colors: ['Black'],
+        sizes: ['S', 'M', 'L'],
+        attributes: {},
+        similarity: 0.71,
+        rrf_score: 0.032,
+      };
+      const mockVector: any = {
+        searchSimilarProducts: jest
+          .fn()
+          .mockResolvedValueOnce([]) // 1st call with strict filters returns 0
+          .mockResolvedValueOnce([fallbackItem]), // 2nd call with relaxed filters succeeds
+      };
+
+      const provider = new LocalDbStoreProvider({} as any, mockVector, mockRedis);
+      const results = await provider.getProductList(TENANT, 'adidas pants', 4, {
+        brand: 'Adidas',
+        targetGender: 'Women',
+        categoryType: 'NonExistentCategory',
+      });
+
+      expect(mockVector.searchSimilarProducts).toHaveBeenCalledTimes(2);
+      expect(mockVector.searchSimilarProducts).toHaveBeenNthCalledWith(
+        1,
+        TENANT,
+        'adidas pants',
+        4,
+        0.25,
+        { brand: 'Adidas', targetGender: 'Women', categoryType: 'NonExistentCategory' },
+      );
+      expect(mockVector.searchSimilarProducts).toHaveBeenNthCalledWith(
+        2,
+        TENANT,
+        'adidas pants',
+        4,
+        0.25,
+        undefined,
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0].name).toBe("Adidas Women's Track Pants");
+      expect(results[0].rrfScore).toBeCloseTo(0.032);
+    });
+
+    it('4. VectorSearchService executes RRF hybrid SQL query with normalized metadata filters', async () => {
+      let capturedStrings: string = '';
+      let capturedValues: any[] = [];
+      const mockPrisma: any = {
+        $queryRaw: jest.fn(async (strings: TemplateStringsArray, ...values: any[]) => {
+          capturedStrings = strings.join('?');
+          capturedValues = values;
+          return [];
+        }),
+      };
+      const mockEmbeddings: any = {
+        generateEmbedding: jest.fn(async () => [0.1, 0.2, 0.3]),
+      };
+
+      const vectorSvc = new VectorSearchService(mockPrisma, mockEmbeddings);
+      await vectorSvc.searchSimilarProducts(TENANT, "Adidas women's pants", 4, 0.25, {
+        brand: 'Adidas',
+        targetGender: "Women's",
+        categoryType: 'joggers',
+      });
+
+      expect(capturedStrings).toContain('WITH filtered_products AS');
+      expect(capturedStrings).toContain('semantic_search AS');
+      expect(capturedStrings).toContain('keyword_search AS');
+      expect(capturedStrings).toContain('ts_rank_cd');
+      expect(capturedStrings).toContain('plainto_tsquery');
+      expect(capturedStrings).toContain('FULL OUTER JOIN keyword_search');
+      expect(capturedStrings).toContain('rrf_score');
+      expect(capturedValues).toContain('Adidas');
+      expect(capturedValues).toContain('WOMEN'); // normalized from "Women's"
+      expect(capturedValues).toContain('Pants'); // normalized from 'joggers'
     });
   });
 });

@@ -7,6 +7,7 @@ import {
   IStoreProvider,
   OrderSummaryResult,
   ProductItem,
+  ProductSearchFilters,
   STORE_PROVIDER,
 } from '../products/interfaces/store-provider.interface';
 import { PrismaService } from '../database/prisma.service';
@@ -279,6 +280,15 @@ export class ChatService {
     const prevLastBotMessage = session.lastBotMessage ?? null;
     const isDrift = intent === IntentType.CHIT_CHAT || intent === IntentType.UNKNOWN;
 
+    const searchFilters: ProductSearchFilters | undefined =
+      extracted_info?.brand || extracted_info?.targetGender || extracted_info?.categoryType
+        ? {
+            brand: extracted_info.brand ?? null,
+            targetGender: extracted_info.targetGender ?? null,
+            categoryType: extracted_info.categoryType ?? null,
+          }
+        : undefined;
+
     // Does this turn supply options for the item currently being configured?
     const pending = session.pendingItem;
     const hasVariantValues = !!(extracted_info?.color || extracted_info?.size || extracted_info?.quantity);
@@ -307,7 +317,12 @@ export class ChatService {
     } else if (intent === IntentType.ADD_TO_CART) {
       // New item: resolve the product, then extract every slot given up front.
       const searchTarget = extracted_query || session.lastViewedProduct?.name || userMessage;
-      const [product] = await this.storeProvider.getProductList(tenantId, searchTarget, 1);
+      const [product] = await this.storeProvider.getProductList(
+        tenantId,
+        searchTarget,
+        1,
+        searchFilters,
+      );
 
       if (!product) {
         productNotFound = searchTarget;
@@ -410,10 +425,10 @@ export class ChatService {
 
     // Fetch Catalog / Order Data first so we can remember the viewed product
     if (intent === IntentType.GENERAL_CATALOG_QUERY) {
-      products = await this.storeProvider.getProductList(tenantId, undefined, 4);
+      products = await this.storeProvider.getProductList(tenantId, undefined, 4, searchFilters);
     } else if (intent === IntentType.QUERY_PRODUCT) {
       const searchQuery = extracted_query || session.pendingItem?.productName || userMessage;
-      products = await this.storeProvider.getProductList(tenantId, searchQuery, 4);
+      products = await this.storeProvider.getProductList(tenantId, searchQuery, 4, searchFilters);
       if (products.length > 0 && !session.pendingItem) {
         session.lastViewedProduct = { id: products[0].id, name: products[0].name };
       }
