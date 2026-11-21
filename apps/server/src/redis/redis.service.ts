@@ -11,18 +11,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit() {
-    const redisUrl = this.configService.get<string>('redisUrl', 'redis://localhost:6379');
+    const rawUrl = this.configService.get<string>('redisUrl', 'redis://127.0.0.1:6379');
+    const redisUrl = rawUrl.replace('://localhost', '://127.0.0.1');
     this.client = new Redis(redisUrl, {
       lazyConnect: true,
       maxRetriesPerRequest: 3,
+      retryStrategy: (times) => Math.min(times * 500, 3000),
     });
 
     this.client.on('connect', () => {
       this.logger.log('Connected to Redis instance.');
     });
 
-    this.client.on('error', (err) => {
-      this.logger.warn(`Redis connection error: ${err.message}`);
+    this.client.on('error', (err: NodeJS.ErrnoException) => {
+      this.logger.warn(`Redis connection error: ${err.message || err.code || 'ECONNREFUSED'}`);
     });
   }
 

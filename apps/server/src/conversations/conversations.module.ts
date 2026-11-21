@@ -11,21 +11,28 @@ import { ConversationEventsService } from './conversation-events.service';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
-        const redisUrl = configService.get<string>('redisUrl', 'redis://localhost:6379');
+        const redisUrl = configService.get<string>('redisUrl', 'redis://127.0.0.1:6379');
         try {
           const url = new URL(redisUrl);
+          const host = !url.hostname || url.hostname === 'localhost' ? '127.0.0.1' : url.hostname;
           return {
             connection: {
-              host: url.hostname || 'localhost',
+              host,
               port: parseInt(url.port || '6379', 10),
               password: url.password ? decodeURIComponent(url.password) : undefined,
               username: url.username ? decodeURIComponent(url.username) : undefined,
               maxRetriesPerRequest: null,
+              retryStrategy: (times: number) => Math.min(times * 500, 3000),
             },
           };
         } catch {
           return {
-            connection: { host: 'localhost', port: 6379, maxRetriesPerRequest: null },
+            connection: {
+              host: '127.0.0.1',
+              port: 6379,
+              maxRetriesPerRequest: null,
+              retryStrategy: (times: number) => Math.min(times * 500, 3000),
+            },
           };
         }
       },

@@ -6,11 +6,19 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly logger = new Logger(PrismaService.name);
 
   async onModuleInit() {
-    try {
-      await this.$connect();
-      this.logger.log('Connected to PostgreSQL Database via Prisma.');
-    } catch (error) {
-      this.logger.warn(`Initial database connection skipped or failed: ${error.message}`);
+    const maxAttempts = 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.$connect();
+        this.logger.log('Connected to PostgreSQL Database via Prisma.');
+        return;
+      } catch (error) {
+        if (attempt === maxAttempts) {
+          this.logger.warn(`Initial database connection skipped or failed: ${error.message}`);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
     }
   }
 
