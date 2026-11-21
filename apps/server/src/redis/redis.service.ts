@@ -98,6 +98,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
           stage: parsed.stage || ChatStage.IDLE,
           cart: parsed.cart || [],
           draftOrder: parsed.draftOrder || {},
+          pendingItem:
+            parsed.pendingItem?.productId && parsed.pendingItem?.productName
+              ? {
+                  ...parsed.pendingItem,
+                  availableColors: Array.isArray(parsed.pendingItem.availableColors)
+                    ? parsed.pendingItem.availableColors
+                    : [],
+                  availableSizes: Array.isArray(parsed.pendingItem.availableSizes)
+                    ? parsed.pendingItem.availableSizes
+                    : [],
+                }
+              : undefined,
           isHumanMode: typeof parsed.isHumanMode === 'boolean' ? parsed.isHumanMode : undefined,
           lastAction: typeof parsed.lastAction === 'string' ? parsed.lastAction : undefined,
           lastViewedProduct: parsed.lastViewedProduct?.name ? parsed.lastViewedProduct : undefined,

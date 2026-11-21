@@ -12,6 +12,8 @@ export interface ScoredProduct {
   target_gender: string | null;
   category_type: string | null;
   stock: number;
+  colors: string[] | null;
+  sizes: string[] | null;
   attributes: any;
   similarity: number;
 }
@@ -66,6 +68,8 @@ export class VectorSearchService {
         target_gender::text AS target_gender,
         category_type,
         stock,
+        colors,
+        sizes,
         attributes,
         1 - (embedding <=> ${vectorString}::vector) AS similarity
       FROM products

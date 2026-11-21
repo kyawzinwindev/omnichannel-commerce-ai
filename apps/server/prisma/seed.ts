@@ -56,7 +56,22 @@ const MATERIALS: Record<CategoryType, string[]> = {
   Dresses: ['Stretch jersey', 'Breathable knit', 'Soft cotton blend'],
 };
 
-const COLORS = ['Black', 'White', 'Navy', 'Heather Grey', 'Olive', 'Burgundy', 'Sky Blue', 'Sand', 'Forest Green'];
+const COLORS = ['Black', 'White', 'Navy', 'Heather Grey', 'Olive', 'Red', 'Burgundy', 'Sky Blue', 'Sand', 'Forest Green'];
+
+/** Styles that always carry a fixed palette (keeps demos predictable). */
+const FIXED_COLORS: Record<string, string[]> = {
+  'Cargo Pants': ['Black', 'Olive', 'Red', 'Sand'],
+};
+
+/** 3-4 distinct colors per product, deterministic for a given seed. */
+function pickColors(rand: () => number, style: string): string[] {
+  if (FIXED_COLORS[style]) return FIXED_COLORS[style];
+  const pool = [...COLORS];
+  const count = 3 + Math.floor(rand() * 2);
+  const picked: string[] = [];
+  while (picked.length < count) picked.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]);
+  return picked;
+}
 
 const SIZES: Record<Gender, string[]> = {
   MEN: ['S', 'M', 'L', 'XL', 'XXL'],
@@ -101,6 +116,8 @@ interface SeedProduct {
   price: number;
   description: string;
   stock: number;
+  colors: string[];
+  sizes: string[];
   attributes: Record<string, unknown>;
 }
 
@@ -115,7 +132,7 @@ function buildCatalog(): SeedProduct[] {
       for (let i = 0; i < 5; i++) {
         const style = styles[i];
         const name = `${brand} ${GENDER_LABEL[gender]} ${style}`;
-        const color = COLORS[Math.floor(rand() * COLORS.length)];
+        const colors = pickColors(rand, style);
         const material = MATERIALS[type][Math.floor(rand() * MATERIALS[type].length)];
         const price = Math.round(BASE_PRICE[type] * BRAND_PRICE_FACTOR[brand] * (0.85 + rand() * 0.5)) - 0.01;
         const roll = rand();
@@ -130,10 +147,12 @@ function buildCatalog(): SeedProduct[] {
           price,
           stock,
           description:
-            `${brand} ${GENDER_LABEL[gender].toLowerCase()} ${style.toLowerCase()} in ${color.toLowerCase()}, ` +
+            `${brand} ${GENDER_LABEL[gender].toLowerCase()} ${style.toLowerCase()}, available in ${colors.join(', ')}, ` +
             `made from ${material.toLowerCase()} with ${BRAND_TECH[brand]}. ` +
             `Designed for ${type === 'Dresses' ? 'effortless style' : 'training and everyday wear'}.`,
-          attributes: { color, material, sizes: SIZES[gender], style },
+          colors,
+          sizes: SIZES[gender],
+          attributes: { material, style },
         });
       }
     }
@@ -171,16 +190,16 @@ async function seedProducts() {
   for (const p of catalog) {
     const text =
       `${p.name}. ${p.description} Brand: ${p.brand}. Gender: ${GENDER_LABEL[p.gender]}. ` +
-      `Category: ${p.categoryType}. Color: ${p.attributes.color}.`;
+      `Category: ${p.categoryType}. Colors: ${p.colors.join(', ')}. Sizes: ${p.sizes.join(', ')}.`;
     const vector = await generateVector(text);
 
     await prisma.$executeRaw`
       INSERT INTO products (
         id, tenant_id, name, description, price, brand, target_gender,
-        category_type, stock, image, attributes, embedding, created_at, updated_at
+        category_type, stock, colors, sizes, image, attributes, embedding, created_at, updated_at
       ) VALUES (
         ${p.id}, ${TENANT_ID}, ${p.name}, ${p.description}, ${p.price}, ${p.brand},
-        ${p.gender}::"Gender", ${p.categoryType}, ${p.stock}, ${''},
+        ${p.gender}::"Gender", ${p.categoryType}, ${p.stock}, ${p.colors}::text[], ${p.sizes}::text[], ${''},
         ${JSON.stringify(p.attributes)}::jsonb, ${vector}::vector, NOW(), NOW()
       );
     `;
@@ -264,6 +283,8 @@ async function seedOrders(catalog: SeedProduct[]) {
         orderId: order.id,
         productId: i.product.id,
         name: i.product.name,
+        color: i.product.colors[0],
+        size: i.product.sizes[Math.min(2, i.product.sizes.length - 1)],
         quantity: i.quantity,
         price: i.product.price,
       })),

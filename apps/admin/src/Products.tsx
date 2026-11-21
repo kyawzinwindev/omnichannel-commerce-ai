@@ -12,6 +12,20 @@ const GENDERS: { value: Gender; label: string }[] = [
 
 const genderLabel = (g: string | null) => GENDERS.find((x) => x.value === g)?.label ?? '-';
 
+const parseList = (raw: string): string[] => {
+  const seen = new Set<string>();
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => {
+      if (!s) return false;
+      const key = s.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
 interface FormState {
   name: string;
   brand: string;
@@ -19,10 +33,22 @@ interface FormState {
   categoryType: string;
   price: string;
   stock: string;
+  colors: string;
+  sizes: string;
   description: string;
 }
 
-const emptyForm: FormState = { name: '', brand: '', targetGender: 'UNISEX', categoryType: '', price: '', stock: '0', description: '' };
+const emptyForm: FormState = {
+  name: '',
+  brand: '',
+  targetGender: 'UNISEX',
+  categoryType: '',
+  price: '',
+  stock: '0',
+  colors: 'Black, White, Navy',
+  sizes: 'S, M, L, XL',
+  description: '',
+};
 
 const toForm = (p: Product): FormState => ({
   name: p.name,
@@ -31,6 +57,8 @@ const toForm = (p: Product): FormState => ({
   categoryType: p.categoryType ?? '',
   price: String(p.price),
   stock: String(p.stock),
+  colors: (p.colors ?? []).join(', '),
+  sizes: (p.sizes ?? []).join(', '),
   description: p.description ?? '',
 });
 
@@ -46,6 +74,8 @@ function validate(f: FormState): Errors {
   else if (!/^\d+(\.\d{1,2})?$/.test(f.price.trim())) e.price = 'At most 2 decimal places';
   const stock = Number(f.stock);
   if (f.stock === '' || !Number.isInteger(stock) || stock < 0) e.stock = 'Stock must be a whole number >= 0';
+  if (parseList(f.colors).length === 0) e.colors = 'Enter at least one color';
+  if (parseList(f.sizes).length === 0) e.sizes = 'Enter at least one size';
   return e;
 }
 
@@ -79,6 +109,8 @@ function ProductForm({ product, brands, types, onClose, onSaved }: {
       categoryType: form.categoryType.trim(),
       price: Number(form.price),
       stock: Number(form.stock),
+      colors: parseList(form.colors),
+      sizes: parseList(form.sizes),
       description: form.description.trim(),
     };
     setSaving(true);
@@ -95,6 +127,8 @@ function ProductForm({ product, brands, types, onClose, onSaved }: {
   }
 
   const err = (k: keyof FormState) => errors[k] && <span className="field-error">{errors[k]}</span>;
+  const colorList = parseList(form.colors);
+  const sizeList = parseList(form.sizes);
 
   return (
     <Modal title={product ? 'Edit product' : 'Add product'} onClose={onClose}>
@@ -123,9 +157,39 @@ function ProductForm({ product, brands, types, onClose, onSaved }: {
             <input id="product-price" className="field" inputMode="decimal" value={form.price} onChange={(e) => set('price', e.target.value)} />
             {err('price')}
           </label>
-          <label>Stock
+          <label className="span-2">Stock
             <input id="product-stock" className="field" inputMode="numeric" value={form.stock} onChange={(e) => set('stock', e.target.value)} />
             {err('stock')}
+          </label>
+          <label className="span-2">Available colors (comma-separated)
+            <input
+              id="product-colors"
+              className="field"
+              placeholder="e.g. Black, Olive, Red"
+              value={form.colors}
+              onChange={(e) => set('colors', e.target.value)}
+            />
+            {colorList.length > 0 && (
+              <div className="variant-tags">
+                {colorList.map((c) => <span key={c} className="badge accent">{c}</span>)}
+              </div>
+            )}
+            {err('colors')}
+          </label>
+          <label className="span-2">Available sizes (comma-separated)
+            <input
+              id="product-sizes"
+              className="field"
+              placeholder="e.g. S, M, L, XL"
+              value={form.sizes}
+              onChange={(e) => set('sizes', e.target.value)}
+            />
+            {sizeList.length > 0 && (
+              <div className="variant-tags">
+                {sizeList.map((s) => <span key={s} className="badge accent">{s}</span>)}
+              </div>
+            )}
+            {err('sizes')}
           </label>
           <label className="span-2">Description
             <textarea id="product-description" className="field" rows={3} value={form.description} onChange={(e) => set('description', e.target.value)} />
@@ -195,7 +259,7 @@ export default function Products() {
   }
 
   const meta: PageMeta | undefined = res?.meta;
-  const COLS = 7;
+  const COLS = 8;
 
   return (
     <div className="page">
@@ -235,7 +299,7 @@ export default function Products() {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Product</th><th>Brand</th><th>For</th><th>Type</th><th>Price</th><th>Stock</th><th style={{ textAlign: 'right' }}>Actions</th></tr>
+              <tr><th>Product</th><th>Brand</th><th>For</th><th>Type</th><th>Variants</th><th>Price</th><th>Stock</th><th style={{ textAlign: 'right' }}>Actions</th></tr>
             </thead>
             <tbody>
               {loading && !res
@@ -251,6 +315,14 @@ export default function Products() {
                       <td><span className="badge accent">{p.brand}</span></td>
                       <td>{genderLabel(p.targetGender)}</td>
                       <td className="muted">{p.categoryType}</td>
+                      <td>
+                        <div className="cell-sub" title={(p.colors ?? []).join(', ')}>
+                          Colors: {(p.colors ?? []).length > 0 ? p.colors.join(', ') : '-'}
+                        </div>
+                        <div className="cell-sub" title={(p.sizes ?? []).join(', ')}>
+                          Sizes: {(p.sizes ?? []).length > 0 ? p.sizes.join(', ') : '-'}
+                        </div>
+                      </td>
                       <td className="num strong">${p.price.toFixed(2)}</td>
                       <td className="num">
                         {p.stock === 0 ? <span className="stock-out">Out of stock</span>

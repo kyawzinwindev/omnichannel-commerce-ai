@@ -440,6 +440,165 @@ describe('Context-Aware Steering', () => {
       expect(state.lastBotMessage).toBe('hello');
     });
   });
+
+  describe('Scenario 5: Apparel Variant Slot-Filling (color, size, quantity)', () => {
+    const cargoPantsProduct = {
+      id: 'nike-men-pants-4',
+      name: "Nike Men's Cargo Pants",
+      price: 68.0,
+      stock: 40,
+      inStock: true,
+      colors: ['Black', 'Olive', 'Red', 'Sand'],
+      sizes: ['S', 'M', 'L', 'XL'],
+    };
+
+    it('1. Partial request ("I want cargo pants") stays in SELECTING_VARIANT and asks for color, size, and quantity', async () => {
+      const h = createHarness(makeSession(), () => ({
+        intent: 'ADD_TO_CART',
+        confidence: 0.96,
+        extractedEntities: { product: 'cargo pants', color: null, size: null, quantity: null },
+      }));
+      (h.chat as any).storeProvider.getProductList = jest.fn(async () => [cargoPantsProduct]);
+
+      await h.chat.processMessage(TENANT, 'I want cargo pants', CONV);
+
+      const saved = h.savedSession()!;
+      expect(saved.stage).toBe(ChatStage.SELECTING_VARIANT);
+      expect(saved.cart).toHaveLength(0);
+      expect(saved.pendingItem).toEqual(
+        expect.objectContaining({
+          productId: 'nike-men-pants-4',
+          productName: "Nike Men's Cargo Pants",
+          availableColors: ['Black', 'Olive', 'Red', 'Sand'],
+          availableSizes: ['S', 'M', 'L', 'XL'],
+          selectedColor: null,
+          selectedSize: null,
+          quantity: null,
+        }),
+      );
+
+      const prompt = h.systemPrompts[0];
+      expect(prompt).toContain('VARIANT SELECTION (SLOT-FILLING) STAGE');
+      expect(prompt).toContain("Nike Men's Cargo Pants");
+      expect(prompt).toContain('Available Colors: Black, Olive, Red, Sand');
+      expect(prompt).toContain('Available Sizes: S, M, L, XL');
+      expect(prompt).toContain('Missing Required Slots: color, size, quantity');
+      expect(prompt).toContain('Do NOT ask for the customer\'s name, phone number, or shipping address yet');
+    });
+
+    it('2. Multi-turn slot filling ("cargo pants" -> "Red, size L" -> "3 pieces") adds item to cart and transitions to COLLECTING_USER_INFO', async () => {
+      const scripts: Record<string, any>[] = [
+        {
+          intent: 'ADD_TO_CART',
+          confidence: 0.96,
+          extractedEntities: { product: 'cargo pants', color: null, size: null, quantity: null },
+        },
+        {
+          intent: 'ADD_TO_CART',
+          confidence: 0.96,
+          extractedEntities: { product: null, color: 'Red', size: 'L', quantity: null },
+        },
+        {
+          intent: 'ADD_TO_CART',
+          confidence: 0.96,
+          extractedEntities: { product: null, color: null, size: null, quantity: 3 },
+        },
+      ];
+      let turn = 0;
+      const h = createHarness(makeSession(), () => scripts[turn++]);
+      (h.chat as any).storeProvider.getProductList = jest.fn(async () => [cargoPantsProduct]);
+
+      // Turn 1: "I want cargo pants"
+      await h.chat.processMessage(TENANT, 'I want cargo pants', CONV);
+      expect(h.savedSession()!.stage).toBe(ChatStage.SELECTING_VARIANT);
+
+      // Turn 2: "Red, size L" -> still missing quantity
+      await h.chat.processMessage(TENANT, 'Red, size L', CONV);
+      const afterTurn2 = h.savedSession()!;
+      expect(afterTurn2.stage).toBe(ChatStage.SELECTING_VARIANT);
+      expect(afterTurn2.pendingItem?.selectedColor).toBe('Red');
+      expect(afterTurn2.pendingItem?.selectedSize).toBe('L');
+      expect(afterTurn2.pendingItem?.quantity).toBeNull();
+      expect(h.systemPrompts[1]).toContain('Missing Required Slots: quantity');
+
+      // Turn 3: "3 pieces" -> completes pendingItem, pushes to cart, transitions to COLLECTING_USER_INFO
+      await h.chat.processMessage(TENANT, '3 pieces', CONV);
+      const afterTurn3 = h.savedSession()!;
+      expect(afterTurn3.stage).toBe(ChatStage.COLLECTING_USER_INFO);
+      expect(afterTurn3.pendingItem).toBeUndefined();
+      expect(afterTurn3.cart).toEqual([
+        {
+          productId: 'nike-men-pants-4',
+          name: "Nike Men's Cargo Pants",
+          price: 68.0,
+          quantity: 3,
+          color: 'Red',
+          size: 'L',
+        },
+      ]);
+      expect(h.systemPrompts[2]).toContain('COLLECTING USER INFO STAGE');
+      expect(h.systemPrompts[2]).toContain("3x Nike Men's Cargo Pants (Red, Size L)");
+    });
+
+    it('3. Complete single-turn request ("3 red cargo pants size L") skips slot questions and moves straight to COLLECTING_USER_INFO', async () => {
+      const h = createHarness(makeSession(), () => ({
+        intent: 'ADD_TO_CART',
+        confidence: 0.98,
+        extractedEntities: { product: 'cargo pants', color: 'Red', size: 'L', quantity: 3 },
+      }));
+      (h.chat as any).storeProvider.getProductList = jest.fn(async () => [cargoPantsProduct]);
+
+      await h.chat.processMessage(TENANT, 'I want 3 red cargo pants in size L', CONV);
+
+      const saved = h.savedSession()!;
+      expect(saved.stage).toBe(ChatStage.COLLECTING_USER_INFO);
+      expect(saved.pendingItem).toBeUndefined();
+      expect(saved.cart).toEqual([
+        {
+          productId: 'nike-men-pants-4',
+          name: "Nike Men's Cargo Pants",
+          price: 68.0,
+          quantity: 3,
+          color: 'Red',
+          size: 'L',
+        },
+      ]);
+      expect(h.systemPrompts[0]).toContain('COLLECTING USER INFO STAGE');
+      expect(h.systemPrompts[0]).toContain('Missing required fields: Full Name, Phone Number, Shipping Address');
+    });
+
+    it('4. Context drift while selecting size/color steers user back to finish choosing options', async () => {
+      const selecting = makeSession({
+        stage: ChatStage.SELECTING_VARIANT,
+        lastAction: IntentType.ADD_TO_CART,
+        lastViewedProduct: { id: 'nike-men-pants-4', name: "Nike Men's Cargo Pants" },
+        lastBotMessage: 'Which size (S, M, L, XL) and quantity would you like?',
+        pendingItem: {
+          productId: 'nike-men-pants-4',
+          productName: "Nike Men's Cargo Pants",
+          price: 68.0,
+          availableColors: ['Black', 'Olive', 'Red', 'Sand'],
+          availableSizes: ['S', 'M', 'L', 'XL'],
+          selectedColor: 'Red',
+          selectedSize: null,
+          quantity: null,
+        },
+      });
+
+      const h = createHarness(selecting, () => ({ intent: 'CHIT_CHAT', confidence: 0.92 }));
+      await h.chat.processMessage(TENANT, 'tell me a joke', CONV);
+
+      const saved = h.savedSession()!;
+      expect(saved.stage).toBe(ChatStage.SELECTING_VARIANT);
+      expect(saved.pendingItem?.selectedColor).toBe('Red');
+
+      const prompt = h.systemPrompts[0];
+      expect(prompt).toContain('VARIANT SELECTION (SLOT-FILLING) STAGE');
+      expect(prompt).toContain('CONVERSATION STEERING');
+      expect(prompt).toContain('Still needed: size, quantity');
+      expect(prompt).toContain('Available sizes: S, M, L, XL');
+    });
+  });
 });
 
 /**

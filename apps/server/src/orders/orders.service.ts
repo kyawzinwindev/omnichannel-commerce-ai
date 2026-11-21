@@ -19,10 +19,17 @@ const toDto = (o: OrderWithItems) => ({
     email: o.customerEmail,
     shippingAddress: o.shippingAddress,
   },
-  itemsSummary: o.items.map((i) => `${i.quantity}× ${i.name}`).join(', '),
+  itemsSummary: o.items
+    .map((i) => {
+      const variant = [i.color, i.size].filter(Boolean).join(' / ');
+      return `${i.quantity}× ${i.name}${variant ? ` (${variant})` : ''}`;
+    })
+    .join(', '),
   items: o.items.map((i) => ({
     id: i.id,
     name: i.name,
+    color: i.color,
+    size: i.size,
     quantity: i.quantity,
     price: Number(i.price),
   })),
@@ -76,6 +83,8 @@ export class OrdersService {
             create: cart.map((c) => ({
               productId: c.productId,
               name: c.name,
+              color: c.color ?? null,
+              size: c.size ?? null,
               quantity: c.quantity,
               price: c.price,
             })),

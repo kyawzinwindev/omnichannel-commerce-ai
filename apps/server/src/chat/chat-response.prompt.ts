@@ -1,4 +1,10 @@
-import { ChatStage, UserSessionState } from '../redis/session-state';
+import {
+  CartItem,
+  ChatStage,
+  UserSessionState,
+  missingSlots,
+  variantLabel,
+} from '../redis/session-state';
 import { IntentType } from './intent.service';
 import { OrderSummaryResult, ProductItem } from '../products/interfaces/store-provider.interface';
 
@@ -18,20 +24,34 @@ export interface PromptContextParams {
   lastViewedProduct?: { id?: string; name: string } | null;
   /** Last assistant reply, truncated. */
   lastBotMessage?: string | null;
+  /** Validation feedback when the user picked an unavailable color/size/qty. */
+  variantNotices?: string[];
+  /** Search term when an ADD_TO_CART lookup returned 0 products. */
+  productNotFound?: string | null;
+  /** Item that just finished slot-filling and was pushed to the cart this turn. */
+  addedItem?: CartItem | null;
+}
+
+function formatCartLine(c: CartItem): string {
+  const variant = variantLabel(c);
+  return `${c.quantity}x ${c.name}${variant ? ` (${variant})` : ''}`;
 }
 
 function buildSteeringBlock(params: PromptContextParams): string {
   const { session, lastAction, lastViewedProduct, lastBotMessage } = params;
-  const { stage, cart, draftOrder } = session;
-  const product = lastViewedProduct?.name || cart[cart.length - 1]?.name || null;
+  const { stage, cart, draftOrder, pendingItem } = session;
+  const product =
+    pendingItem?.productName || lastViewedProduct?.name || cart[cart.length - 1]?.name || null;
 
-  const pendingCart =
-    cart.length > 0 ? cart.map((c) => `${c.quantity}x ${c.name}`).join(', ') : 'empty';
+  const pendingCart = cart.length > 0 ? cart.map(formatCartLine).join(', ') : 'empty';
   const context = [
     `- Current stage: ${stage}`,
     `- Last action: ${lastAction || 'none'}`,
     `- Product being explored: ${product || 'none'}`,
     `- Pending cart: ${pendingCart}`,
+    pendingItem
+      ? `- Configuring item: ${pendingItem.productName} (missing: ${missingSlots(pendingItem).join(', ') || 'none'})`
+      : null,
     lastBotMessage ? `- Your previous message (lastBotMessage): "${lastBotMessage}"` : null,
   ]
     .filter(Boolean)
@@ -46,6 +66,17 @@ function buildSteeringBlock(params: PromptContextParams): string {
     if (!draftOrder.phone) missing.push('Phone Number');
     if (!draftOrder.address) missing.push('Shipping Address');
     stageRule = `Checkout details are incomplete. After your short acknowledgement, state clearly which specific field is still missing: ${missing.join(', ') || 'none'}.`;
+  } else if (stage === ChatStage.SELECTING_VARIANT && pendingItem) {
+    const missing = missingSlots(pendingItem);
+    const colorOpts =
+      pendingItem.availableColors.length > 0
+        ? `Available colors: ${pendingItem.availableColors.join(', ')}.`
+        : '';
+    const sizeOpts =
+      pendingItem.availableSizes.length > 0
+        ? `Available sizes: ${pendingItem.availableSizes.join(', ')}.`
+        : '';
+    stageRule = `The customer is configuring "${pendingItem.productName}" before it can be added to the cart. Still needed: ${missing.join(', ')}. ${colorOpts} ${sizeOpts} After your brief 1-sentence acknowledgement, immediately steer them back to choosing the remaining options (${missing.join(', ')}) for "${pendingItem.productName}". Do NOT ask for shipping or contact details yet.`;
   } else if (lastAction === IntentType.ADD_TO_CART || (cart.length > 0 && !product)) {
     stageRule = `The customer picked an item${product ? ` ("${product}")` : ''}. Keep it in mind, acknowledge their message, then ask how many they want (e.g. "By the way, how many ${product || '[Product Name]'} would you like to add to your cart (for example 1 or 2)?").`;
   } else if (
@@ -73,8 +104,17 @@ RULES:
 }
 
 export function buildStageAwareSystemPrompt(params: PromptContextParams): string {
-  const { intent, session, products, orderSummary, searchQuery } = params;
-  const { stage, cart, draftOrder } = session;
+  const {
+    intent,
+    session,
+    products,
+    orderSummary,
+    searchQuery,
+    variantNotices,
+    productNotFound,
+    addedItem,
+  } = params;
+  const { stage, cart, draftOrder, pendingItem } = session;
   const isDrift = intent === IntentType.CHIT_CHAT || intent === IntentType.UNKNOWN;
   const steering = isDrift ? buildSteeringBlock(params) : '';
 
@@ -87,7 +127,7 @@ export function buildStageAwareSystemPrompt(params: PromptContextParams): string
 - Reply with ONE single message in plain text. No HTML, no tables, no headings, no bold/italic markers (**, __, #).
 - For product lists use one line per item: "- Name - $Price (In Stock / Out of Stock)", with a blank line between sections.
 - Never repeat the same list or information twice in a reply.
-- When listing products, end with one short line telling the customer to reply with the product name and quantity to order.`;
+- When listing products, end with one short line telling the customer to reply with the product name, color, size, and quantity to order.`;
 
   let prompt = `You are a helpful and efficient E-Commerce AI Assistant.
 Current Chat Stage: ${stage}`;
@@ -96,7 +136,12 @@ Current Chat Stage: ${stage}`;
   if (stage === ChatStage.CONFIRMING_ORDER) {
     const cartSummary =
       cart.length > 0
-        ? cart.map((c) => `- ${c.name} (Qty: ${c.quantity}) - $${(c.price * c.quantity).toFixed(2)}`).join('\n')
+        ? cart
+            .map((c) => {
+              const variant = variantLabel(c);
+              return `- ${c.name}${variant ? ` (${variant})` : ''} (Qty: ${c.quantity}) - $${(c.price * c.quantity).toFixed(2)}`;
+            })
+            .join('\n')
         : '- 1x Selected Store Item';
     const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
@@ -111,7 +156,7 @@ ${cartSummary}
 Total Amount: $${total.toFixed(2)}
 
 INSTRUCTIONS:
-1. Present the order summary concisely.
+1. Present the order summary concisely (including selected color, size, and quantity for each item).
 2. Ask for the customer's final confirmation to place the order (e.g. "Reply 'Yes' to confirm and place your order, or let me know if you would like to edit anything.").
 3. Do NOT ask for name, phone, or address again as they are already provided.
 4. The order has NOT been placed yet. NEVER say or imply the order is placed, confirmed, submitted or shipped, even if the customer said "yes" — only the system places orders. If the customer seems to agree, ask them to reply "Yes" once more to confirm.`;
@@ -120,7 +165,37 @@ INSTRUCTIONS:
     return prompt;
   }
 
-  // 2. COLLECTING_USER_INFO Stage
+  // 2. SELECTING_VARIANT Stage (Slot-Filling for Color, Size, Quantity)
+  if (stage === ChatStage.SELECTING_VARIANT && pendingItem) {
+    const missing = missingSlots(pendingItem);
+    const chosen: string[] = [];
+    if (pendingItem.selectedColor) chosen.push(`Color: ${pendingItem.selectedColor}`);
+    if (pendingItem.selectedSize) chosen.push(`Size: ${pendingItem.selectedSize}`);
+    if (pendingItem.quantity) chosen.push(`Quantity: ${pendingItem.quantity}`);
+
+    prompt += `\n\nVARIANT SELECTION (SLOT-FILLING) STAGE:
+Product Selected: ${pendingItem.productName} ($${pendingItem.price.toFixed(2)})
+Available Colors: ${pendingItem.availableColors.length > 0 ? pendingItem.availableColors.join(', ') : 'Standard'}
+Available Sizes: ${pendingItem.availableSizes.length > 0 ? pendingItem.availableSizes.join(', ') : 'Standard'}
+Already Selected Slots: ${chosen.length > 0 ? chosen.join(', ') : 'None yet'}
+Missing Required Slots: ${missing.join(', ')}`;
+
+    if (variantNotices && variantNotices.length > 0) {
+      prompt += `\nValidation Feedback: ${variantNotices.join(' ')}`;
+    }
+
+    prompt += `\n
+INSTRUCTIONS:
+1. ${variantNotices && variantNotices.length > 0 ? 'Politely inform the customer about the unavailable option(s) noted in Validation Feedback above and list the valid available options.' : 'Acknowledge the product and any options the customer has already chosen.'}
+2. Ask ONLY for the Missing Required Slots (${missing.join(', ')}), explicitly listing the available choices from the database (${missing.includes('color') ? `Colors: ${pendingItem.availableColors.join(', ')}` : ''}${missing.includes('color') && missing.includes('size') ? '; ' : ''}${missing.includes('size') ? `Sizes: ${pendingItem.availableSizes.join(', ')}` : ''}).
+3. Do NOT ask for the customer's name, phone number, or shipping address yet — variant selection must finish first.
+4. Keep the question concise, natural, and in 1-2 sentences.`;
+
+    prompt += steering + formatInstruction + languageInstruction;
+    return prompt;
+  }
+
+  // 3. COLLECTING_USER_INFO Stage
   if (stage === ChatStage.COLLECTING_USER_INFO) {
     const missing: string[] = [];
     if (!draftOrder.name) missing.push('Full Name');
@@ -132,12 +207,15 @@ INSTRUCTIONS:
     if (draftOrder.phone) provided.push(`Phone: ${draftOrder.phone}`);
     if (draftOrder.address) provided.push(`Address: ${draftOrder.address}`);
 
-    prompt += `\n\nCOLLECTING USER INFO STAGE:
+    const addedLine = addedItem ? `\nNewly Added to Cart: ${formatCartLine(addedItem)}` : '';
+
+    prompt += `\n\nCOLLECTING USER INFO STAGE:${addedLine}
+Cart Items: ${cart.length > 0 ? cart.map(formatCartLine).join(', ') : 'None'}
 ${provided.length > 0 ? `Already collected: ${provided.join(', ')}` : 'No details collected yet.'}
 Missing required fields: ${missing.length > 0 ? missing.join(', ') : 'None'}
 
 INSTRUCTIONS:
-1. Acknowledge any newly provided details briefly.
+1. ${addedItem ? `Confirm that ${formatCartLine(addedItem)} has been added to their cart.` : 'Acknowledge any newly provided details briefly.'}
 2. Ask ONLY for the missing fields (${missing.join(', ')}).
 3. Keep the message extremely concise and clear. Do NOT generate long prose or unnecessary paragraphs.`;
 
@@ -145,13 +223,27 @@ INSTRUCTIONS:
     return prompt;
   }
 
-  // 3. IDLE Stage with Specific Intents
+  // 4. IDLE Stage with Specific Intents
+  if (intent === IntentType.ADD_TO_CART && (productNotFound || (variantNotices && variantNotices.length > 0))) {
+    prompt += `\n\nPRODUCT UNAVAILABLE:
+${productNotFound ? `No matching product found in catalog for "${productNotFound}".` : variantNotices?.join(' ')}
+INSTRUCTIONS:
+1. Politely let the customer know the item is unavailable or could not be found.
+2. Offer to show available products from the catalog.`;
+    prompt += formatInstruction + languageInstruction;
+    return prompt;
+  }
+
   switch (intent) {
     case IntentType.GENERAL_CATALOG_QUERY: {
       let catalogText = 'Our store offers a curated selection of premium gear, footwear, drinkware, and lifestyle items.';
       if (products && products.length > 0) {
         catalogText = products
-          .map((p, i) => `${i + 1}. ${p.name} - $${p.price} (${p.inStock ? 'In Stock' : 'Out of Stock'})`)
+          .map((p, i) => {
+            const colors = p.colors && p.colors.length > 0 ? ` | Colors: ${p.colors.join(', ')}` : '';
+            const sizes = p.sizes && p.sizes.length > 0 ? ` | Sizes: ${p.sizes.join(', ')}` : '';
+            return `${i + 1}. ${p.name} - $${p.price} (${p.inStock ? 'In Stock' : 'Out of Stock'})${colors}${sizes}`;
+          })
           .join('\n');
       }
 
@@ -171,7 +263,7 @@ INSTRUCTIONS:
         const productList = products
           .map(
             (p, idx) =>
-              `${idx + 1}. Product: "${p.name}"\n   Price: $${p.price}\n   Stock: ${p.inStock ? 'In Stock' : 'Out of Stock'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
+              `${idx + 1}. Product: "${p.name}"\n   Price: $${p.price}\n   Stock: ${p.inStock ? 'In Stock' : 'Out of Stock'}\n   Colors: ${p.colors && p.colors.length > 0 ? p.colors.join(', ') : 'N/A'}\n   Sizes: ${p.sizes && p.sizes.length > 0 ? p.sizes.join(', ') : 'N/A'}\n   Description: ${p.description || 'N/A'}\n   Attributes: ${JSON.stringify(p.attributes || {})}`,
           )
           .join('\n\n');
 
@@ -179,9 +271,9 @@ INSTRUCTIONS:
 ${productList}
 
 INSTRUCTIONS:
-1. Return item details (Name, Price, Stock Status).
+1. Return item details (Name, Price, Stock Status, Available Colors, and Available Sizes).
 2. Highlight key features in 1-2 friendly sentences.
-3. Ask for the quantity in a single concise sentence (e.g. "How many would you like to add to your cart?").`;
+3. Ask which color, size, and quantity they would like to add to their cart.`;
       } else {
         prompt += `\n\nNO MATCHING PRODUCTS FOUND for query "${searchQuery || 'requested item'}".
 INSTRUCTIONS:
@@ -194,10 +286,10 @@ INSTRUCTIONS:
     case IntentType.CHECK_ORDER: {
       if (orderSummary) {
         const itemsList = (orderSummary.items || [])
-          .map(
-            (item, idx) =>
-              `${idx + 1}. ${item.name} (Qty: ${item.quantity}) - $${(item.price * item.quantity).toFixed(2)}`,
-          )
+          .map((item, idx) => {
+            const variant = variantLabel(item);
+            return `${idx + 1}. ${item.name}${variant ? ` (${variant})` : ''} (Qty: ${item.quantity}) - $${(item.price * item.quantity).toFixed(2)}`;
+          })
           .join('\n');
 
         prompt += `\n\nORDER SUMMARY DETAILS FOR #${orderSummary.orderNumber}:

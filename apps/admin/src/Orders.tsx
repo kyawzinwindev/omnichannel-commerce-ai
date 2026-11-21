@@ -75,7 +75,16 @@ function OrderDrawer({ order, busy, onStatus, onDelete, onClose }: {
             <tbody>
               {order.items.map((i) => (
                 <tr key={i.id}>
-                  <td>{i.name}<div className="cell-sub">${i.price.toFixed(2)} each</div></td>
+                  <td>
+                    <div className="strong">{i.name}</div>
+                    {(i.color || i.size) && (
+                      <div className="variant-tags" style={{ marginTop: 4 }}>
+                        {i.color && <span className="badge accent">Color: {i.color}</span>}
+                        {i.size && <span className="badge accent">Size: {i.size}</span>}
+                      </div>
+                    )}
+                    <div className="cell-sub">${i.price.toFixed(2)} each</div>
+                  </td>
                   <td className="num">{i.quantity}</td>
                   <td className="num" style={{ textAlign: 'right' }}>${(i.price * i.quantity).toFixed(2)}</td>
                 </tr>

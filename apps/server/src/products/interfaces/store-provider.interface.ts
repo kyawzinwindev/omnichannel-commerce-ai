@@ -8,6 +8,8 @@ export interface ProductItem {
   category?: string | null;
   stock?: number;
   inStock: boolean;
+  colors?: string[];
+  sizes?: string[];
   image?: string | null;
   attributes?: Record<string, any> | null;
   similarity?: number;
@@ -18,6 +20,8 @@ export interface OrderItem {
   name: string;
   quantity: number;
   price: number;
+  color?: string | null;
+  size?: string | null;
 }
 
 export interface OrderSummaryResult {

@@ -16,8 +16,15 @@ import { RedisChatMessageHistory } from '../redis/redis-chat-history';
 import { ChatPromptTemplate, MessagesPlaceholder } from '@langchain/core/prompts';
 import { RunnableWithMessageHistory } from '@langchain/core/runnables';
 import { randomUUID } from 'crypto';
-import { ChatStage, UserSessionState } from '../redis/session-state';
+import {
+  CartItem,
+  ChatStage,
+  PendingItem,
+  UserSessionState,
+  missingSlots,
+} from '../redis/session-state';
 import { buildStageAwareSystemPrompt } from './chat-response.prompt';
+import { applySlotValues, isSameProduct } from './variant-slots';
 
 export interface ChatResponse {
   conversationId: string;
@@ -98,6 +105,7 @@ export class ChatService {
         lastBotMessage: session.lastBotMessage,
         cart: session.cart,
         draftOrder: session.draftOrder,
+        pendingItem: session.pendingItem,
         lastViewedProduct: session.lastViewedProduct,
         lastAction: session.lastAction,
       });
@@ -193,6 +201,56 @@ export class ChatService {
   }
 
   /**
+   * Moves `session.pendingItem` into `session.cart` once all required slots
+   * (color, size, quantity) are filled; otherwise keeps stage at SELECTING_VARIANT.
+   */
+  private completePendingItem(session: UserSessionState): CartItem | null {
+    const pending = session.pendingItem;
+    if (!pending) return null;
+
+    if (missingSlots(pending).length > 0) {
+      session.stage = ChatStage.SELECTING_VARIANT;
+      return null;
+    }
+
+    const quantity = pending.quantity || 1;
+    const color = pending.selectedColor ?? null;
+    const size = pending.selectedSize ?? null;
+
+    const existingItem = session.cart.find(
+      (c) =>
+        (c.productId === pending.productId ||
+          c.name.toLowerCase() === pending.productName.toLowerCase()) &&
+        (c.color ?? null) === color &&
+        (c.size ?? null) === size,
+    );
+
+    let added: CartItem;
+    if (existingItem) {
+      existingItem.quantity += quantity;
+      added = existingItem;
+    } else {
+      added = {
+        productId: pending.productId,
+        name: pending.productName,
+        price: Number(pending.price),
+        quantity,
+        color,
+        size,
+      };
+      session.cart.push(added);
+    }
+
+    session.pendingItem = undefined;
+    if (session.draftOrder.name && session.draftOrder.phone && session.draftOrder.address) {
+      session.stage = ChatStage.CONFIRMING_ORDER;
+    } else {
+      session.stage = ChatStage.COLLECTING_USER_INFO;
+    }
+    return added;
+  }
+
+  /**
    * Orchestrates the State Machine transitions and loads store data
    */
   private async handleSessionAndContext(
@@ -211,6 +269,9 @@ export class ChatService {
     const { intent, extracted_query, extracted_info } = intentResult;
     let products: ProductItem[] | undefined = undefined;
     let orderSummary: OrderSummaryResult | null | undefined = undefined;
+    const variantNotices: string[] = [];
+    let productNotFound: string | null = null;
+    let addedItem: CartItem | null = null;
 
     // Context from BEFORE this turn (what the conversation was about)
     const prevLastAction = session.lastAction ?? null;
@@ -218,42 +279,58 @@ export class ChatService {
     const prevLastBotMessage = session.lastBotMessage ?? null;
     const isDrift = intent === IntentType.CHIT_CHAT || intent === IntentType.UNKNOWN;
 
+    // Does this turn supply options for the item currently being configured?
+    const pending = session.pendingItem;
+    const hasVariantValues = !!(extracted_info?.color || extracted_info?.size || extracted_info?.quantity);
+    const fillsPending =
+      !!pending &&
+      intent !== IntentType.CANCEL_ORDER &&
+      intent !== IntentType.COLLECT_INFO &&
+      ((intent === IntentType.ADD_TO_CART &&
+        (!extracted_query || isSameProduct(extracted_query, pending.productName))) ||
+        (!isDrift && hasVariantValues && !extracted_query));
+
     // 1. Handle State Transitions based on Intent & Current Stage
     if (intent === IntentType.CANCEL_ORDER) {
       session.stage = ChatStage.IDLE;
       session.cart = [];
       session.draftOrder = {};
+      session.pendingItem = undefined;
       session.lastAction = undefined;
       session.lastViewedProduct = undefined;
       session.lastBotMessage = undefined;
       await this.redisService.clearSessionState(tenantId, conversationId);
+    } else if (fillsPending && pending) {
+      // Multi-turn slot filling: "Red, size L" / "3 pieces"
+      variantNotices.push(...applySlotValues(pending, extracted_info));
+      addedItem = this.completePendingItem(session);
     } else if (intent === IntentType.ADD_TO_CART) {
-      const searchTarget = extracted_query || userMessage;
-      const matchedProducts = await this.storeProvider.getProductList(tenantId, searchTarget, 1);
-      const topProduct = matchedProducts[0] || {
-        id: `item-${Date.now()}`,
-        name: extracted_query || 'Selected Product',
-        price: 128.0,
-        inStock: true,
-      };
+      // New item: resolve the product, then extract every slot given up front.
+      const searchTarget = extracted_query || session.lastViewedProduct?.name || userMessage;
+      const [product] = await this.storeProvider.getProductList(tenantId, searchTarget, 1);
 
-      const quantity = extracted_info?.quantity || 1;
-      const existingItem = session.cart.find(
-        (c) => c.productId === topProduct.id || c.name.toLowerCase() === topProduct.name.toLowerCase(),
-      );
-
-      if (existingItem) {
-        existingItem.quantity += quantity;
+      if (!product) {
+        productNotFound = searchTarget;
+      } else if (!product.inStock) {
+        variantNotices.push(`${product.name} is currently out of stock.`);
+        session.lastViewedProduct = { id: product.id, name: product.name };
       } else {
-        session.cart.push({
-          productId: topProduct.id,
-          name: topProduct.name,
-          price: Number(topProduct.price),
-          quantity,
-        });
+        const item: PendingItem = {
+          productId: product.id,
+          productName: product.name,
+          price: Number(product.price),
+          stock: product.stock,
+          availableColors: product.colors ?? [],
+          availableSizes: product.sizes ?? [],
+          selectedColor: null,
+          selectedSize: null,
+          quantity: null,
+        };
+        variantNotices.push(...applySlotValues(item, extracted_info));
+        session.pendingItem = item;
+        session.lastViewedProduct = { id: product.id, name: product.name };
+        addedItem = this.completePendingItem(session);
       }
-
-      session.stage = ChatStage.COLLECTING_USER_INFO;
     } else if (
       session.stage === ChatStage.COLLECTING_USER_INFO ||
       intent === IntentType.COLLECT_INFO
@@ -270,8 +347,14 @@ export class ChatService {
         }
       }
 
-      // Check if all 3 fields are provided -> transition to CONFIRMING_ORDER
-      if (session.draftOrder.name && session.draftOrder.phone && session.draftOrder.address) {
+      // All 3 fields + no item still being configured -> CONFIRMING_ORDER
+      if (
+        !session.pendingItem &&
+        session.cart.length > 0 &&
+        session.draftOrder.name &&
+        session.draftOrder.phone &&
+        session.draftOrder.address
+      ) {
         session.stage = ChatStage.CONFIRMING_ORDER;
       }
     } else if (
@@ -293,6 +376,8 @@ export class ChatService {
             ? session.cart.map((c, i) => ({
                 id: c.productId || `item-${i + 1}`,
                 name: c.name,
+                color: c.color ?? null,
+                size: c.size ?? null,
                 quantity: c.quantity,
                 price: c.price,
               }))
@@ -327,9 +412,9 @@ export class ChatService {
     if (intent === IntentType.GENERAL_CATALOG_QUERY) {
       products = await this.storeProvider.getProductList(tenantId, undefined, 4);
     } else if (intent === IntentType.QUERY_PRODUCT) {
-      const searchQuery = extracted_query || userMessage;
+      const searchQuery = extracted_query || session.pendingItem?.productName || userMessage;
       products = await this.storeProvider.getProductList(tenantId, searchQuery, 4);
-      if (products.length > 0) {
+      if (products.length > 0 && !session.pendingItem) {
         session.lastViewedProduct = { id: products[0].id, name: products[0].name };
       }
     } else if (intent === IntentType.CHECK_ORDER) {
@@ -365,6 +450,9 @@ export class ChatService {
       lastAction: prevLastAction,
       lastViewedProduct: prevLastViewedProduct ?? session.lastViewedProduct ?? null,
       lastBotMessage: prevLastBotMessage,
+      variantNotices,
+      productNotFound,
+      addedItem,
     });
 
     return {
@@ -380,6 +468,7 @@ export class ChatService {
     return (
       session.stage !== ChatStage.IDLE ||
       session.cart.length > 0 ||
+      !!session.pendingItem ||
       !!session.lastViewedProduct ||
       !!session.lastAction
     );

@@ -24,7 +24,7 @@ export class LocalDbStoreProvider implements IStoreProvider {
    * accelerated with Redis caching.
    */
   async getProductList(tenantId: string, query?: string, limit = 5): Promise<ProductItem[]> {
-    const cacheKey = `cache:products:${tenantId}:${query ? query.toLowerCase().trim() : 'all'}:${limit}`;
+    const cacheKey = `cache:products:v2:${tenantId}:${query ? query.toLowerCase().trim() : 'all'}:${limit}`;
 
     try {
       const cached = await this.redisService.get(cacheKey);
@@ -57,6 +57,8 @@ export class LocalDbStoreProvider implements IStoreProvider {
           category: p.category_type,
           stock: p.stock,
           inStock: p.stock > 0,
+          colors: p.colors ?? [],
+          sizes: p.sizes ?? [],
           attributes: p.attributes,
           similarity: p.similarity,
         }));
@@ -85,6 +87,8 @@ export class LocalDbStoreProvider implements IStoreProvider {
           category: p.categoryType,
           stock: p.stock,
           inStock: p.stock > 0,
+          colors: p.colors,
+          sizes: p.sizes,
           image: p.image,
           attributes: p.attributes as Record<string, any>,
         }));
@@ -105,6 +109,8 @@ export class LocalDbStoreProvider implements IStoreProvider {
         category: p.categoryType,
         stock: p.stock,
         inStock: p.stock > 0,
+        colors: p.colors,
+        sizes: p.sizes,
         image: p.image,
         attributes: p.attributes as Record<string, any>,
       }));
@@ -168,6 +174,8 @@ export class LocalDbStoreProvider implements IStoreProvider {
         id: i.id,
         name: i.name,
         quantity: i.quantity,
+        color: i.color,
+        size: i.size,
         price: Number(i.price),
       })),
       totalAmount: Number(order.totalAmount),

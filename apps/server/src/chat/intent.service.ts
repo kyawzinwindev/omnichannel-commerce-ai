@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LlmService } from './llm.service';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
-import { CartItem, ChatStage, DraftOrder } from '../redis/session-state';
+import { CartItem, ChatStage, DraftOrder, PendingItem, missingSlots } from '../redis/session-state';
 import { ENGLISH_ONLY_INSTRUCTION } from './language-policy';
 
 export enum IntentType {
@@ -22,6 +22,8 @@ export interface ExtractedInfo {
   phone?: string;
   address?: string;
   quantity?: number;
+  color?: string;
+  size?: string;
 }
 
 export interface IntentResult {
@@ -40,6 +42,7 @@ export interface IntentContext {
   lastBotMessage?: string | null;
   cart?: CartItem[];
   draftOrder?: DraftOrder;
+  pendingItem?: PendingItem | null;
   lastViewedProduct?: { id?: string; name: string } | null;
   lastAction?: string | null;
 }
@@ -61,9 +64,22 @@ export class IntentService {
     const cart = ctx.cart ?? [];
     parts.push(
       cart.length > 0
-        ? `Cart: ${cart.map((c) => `${c.quantity}x ${c.name}`).join(', ')}`
+        ? `Cart: ${cart
+            .map((c) => `${c.quantity}x ${c.name}${c.color || c.size ? ` (${[c.color, c.size].filter(Boolean).join(' / ')})` : ''}`)
+            .join(', ')}`
         : 'Cart: empty',
     );
+
+    const pending = ctx.pendingItem;
+    if (pending) {
+      parts.push(
+        `Item being configured: ${pending.productName}\n` +
+          `  available colors: ${pending.availableColors.join(', ') || 'n/a'}\n` +
+          `  available sizes: ${pending.availableSizes.join(', ') || 'n/a'}\n` +
+          `  selected: color=${pending.selectedColor || 'MISSING'}, size=${pending.selectedSize || 'MISSING'}, quantity=${pending.quantity || 'MISSING'}\n` +
+          `  still missing: ${missingSlots(pending).join(', ') || 'none'}`,
+      );
+    }
 
     const draft = ctx.draftOrder ?? {};
     const missing = (['name', 'phone', 'address'] as const).filter((k) => !draft[k]);
@@ -103,7 +119,7 @@ INTENTS (choose EXACTLY ONE):
 - GENERAL_CATALOG_QUERY: broad question about what the store sells, with no specific product (extractedEntities.product MUST be null).
 - QUERY_PRODUCT: asking about a specific product, brand or feature (put the search term in extractedEntities.product).
 - CHECK_ORDER: asking for tracking/status of an existing order (put the order id in extractedEntities.product).
-- ADD_TO_CART: wants to buy / add an item (product in extractedEntities.product, quantity in extractedEntities.quantity, default 1).
+- ADD_TO_CART: wants to buy / add an item, OR is choosing color / size / quantity for the item being configured. Put the product in extractedEntities.product (null when the user only gives options for the item already being configured), and any color, size and quantity mentioned in extractedEntities. Do NOT invent a default quantity: leave quantity null unless the user states it.
 - COLLECT_INFO: providing name, phone number or delivery address.
 - CONFIRM_ORDER: agrees to finalize the pending order.
 - CANCEL_ORDER: wants to abort / cancel the order process.
@@ -120,8 +136,18 @@ CONTEXT EVALUATION RULES:
 3. Disruption / off-topic in active states (CONFIRMING_ORDER, COLLECTING_USER_INFO, or product browsing):
    - If the user asks something completely unrelated, banters, tells a joke, or sends fragmented fillers -> CHIT_CHAT or UNKNOWN.
    - Preserve the active state so the response generator can steer the conversation back.
-4. Outside CONFIRMING_ORDER, a bare "yes"/"okay" does not confirm anything; interpret it against lastBotMessage (e.g. answering a question the bot asked) or treat it as CHIT_CHAT.
-5. Only choose CONFIRM_ORDER when currentState is CONFIRMING_ORDER.
+4. SELECTING_VARIANT context (an item is being configured, see pendingContext):
+   - Answers that supply color, size and/or quantity ("Large", "Red, 2 pcs", "3 of them", "black in M", "just one") -> ADD_TO_CART with product null and the matching extractedEntities.
+   - Asking for a different product to buy -> ADD_TO_CART with that product.
+   - Questions about the item's options ("what colors do you have?") -> QUERY_PRODUCT with product null.
+   - Off-topic banter or fillers -> CHIT_CHAT (the item stays pending).
+5. Outside CONFIRMING_ORDER, a bare "yes"/"okay" does not confirm anything; interpret it against lastBotMessage (e.g. answering a question the bot asked) or treat it as CHIT_CHAT.
+6. Only choose CONFIRM_ORDER when currentState is CONFIRMING_ORDER.
+
+ENTITY EXTRACTION:
+- Extract product, color, size and quantity together whenever present ("I want 3 red cargo pants in size L" -> product "cargo pants", color "Red", size "L", quantity 3).
+- size: normalise to the store's codes when obvious (small -> S, medium -> M, large -> L, extra large -> XL, double XL / 2XL -> XXL).
+- quantity: a positive integer ("a pair" / "one" -> 1, "a couple" -> 2), never a default.
 
 OUTPUT RULES:
 - Return ONLY valid raw JSON. No markdown backticks or commentary.
@@ -136,6 +162,8 @@ JSON schema:
   "confidence": 0.95,
   "extractedEntities": {{
     "product": null,
+    "color": null,
+    "size": null,
     "quantity": null,
     "name": null,
     "phone": null,
@@ -207,7 +235,13 @@ JSON schema:
       if (name) extracted_info.name = name;
       if (phone) extracted_info.phone = phone;
       if (address) extracted_info.address = address;
-      if (typeof entities.quantity === 'number') extracted_info.quantity = entities.quantity;
+      const color = this.asTrimmedString(entities.color);
+      const size = this.asTrimmedString(entities.size);
+      if (color) extracted_info.color = color;
+      if (size) extracted_info.size = size;
+      const quantity =
+        typeof entities.quantity === 'number' ? entities.quantity : Number(this.asTrimmedString(entities.quantity));
+      if (Number.isInteger(quantity) && quantity > 0) extracted_info.quantity = quantity;
 
       return {
         intent,

@@ -12,6 +12,8 @@ export interface Product {
   price: number;
   description: string | null;
   stock: number;
+  colors: string[];
+  sizes: string[];
   inStock: boolean;
 }
 
@@ -24,6 +26,8 @@ export interface ProductInput {
   categoryType: string;
   price: number;
   stock: number;
+  colors: string[];
+  sizes: string[];
   description?: string;
 }
 
@@ -50,7 +54,7 @@ export interface Order {
   createdAt: string;
   customer: { name: string | null; phone: string | null; email: string | null; shippingAddress: string | null };
   itemsSummary: string;
-  items: { id: string; name: string; quantity: number; price: number }[];
+  items: { id: string; name: string; color?: string | null; size?: string | null; quantity: number; price: number }[];
 }
 
 export interface Conversation {

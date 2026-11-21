@@ -96,6 +96,8 @@ model Product {
   targetGender Gender?                       @map("target_gender")
   categoryType String?                       @map("category_type")
   stock        Int                           @default(0)
+  colors       String[]                      @default([])
+  sizes        String[]                      @default([])
   image       String?
   attributes  Json?
   embedding   Unsupported("vector(384)")?
@@ -150,6 +152,8 @@ model OrderItem {
   orderId   String  @map("order_id")
   productId String? @map("product_id")
   name      String
+  color     String?
+  size      String?
   quantity  Int     @default(1)
   price     Decimal @db.Decimal(10, 2)
   order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)

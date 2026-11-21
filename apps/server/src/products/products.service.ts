@@ -9,6 +9,8 @@ export interface ProductInput {
   categoryType: string;
   price: number;
   stock: number;
+  colors?: string[];
+  sizes?: string[];
   description?: string;
 }
 
@@ -21,6 +23,8 @@ const toDto = (p: Product) => ({
   price: Number(p.price),
   description: p.description,
   stock: p.stock,
+  colors: p.colors ?? [],
+  sizes: p.sizes ?? [],
   inStock: p.stock > 0,
 });
 
